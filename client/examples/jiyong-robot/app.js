@@ -18,7 +18,22 @@ async function load(){const seeds=check(await api.data.list({collection:'seeds',
 const instruction=()=>config.task+(language==='en'?' Please write the saved result and final reply in natural English.':'');
 $('seed-form').onsubmit=e=>{e.preventDefault();const content=$('source').value.trim();if(!content)return;action(async()=>{check(await api.data.batch({collection:'seeds',operations:[{id:'seed_'+api.createRequestId(),expectedRevision:0,value:{title:content.slice(0,100),content,status:'active'}}]}));$('source').value='';$('source-status').textContent=language==='en'?'Input saved on this device':'素材已保存到本机';await load();});};
 $('run').onclick=()=>action(async()=>{check(await api.chat.expand());check(await api.chat.send({text:instruction(),requestId:api.createRequestId()}));status(language==='en'?'Request sent. Check the conversation for progress.':'已开始，请在右侧对话查看进度；完成后成果会回到这里。');},$('run'));
-async function schedule(once,due){settings=check(await api.settings.get());if(!once&&settings.values.scheduleId){status(language==='en'?'A schedule already exists. Manage it in SoduWork Automations.':'已有订阅计划；请在 SoduWork 自动化中查看、修改或暂停。');return;}const timing=once?`${due.getFullYear()}年${due.getMonth()+1}月${due.getDate()}日${due.getHours()}点${due.getMinutes()}分执行一次`:'每天早上9点';const r=check(await api.automation.create({context:{characterName:config.nickname},text:timing+'，运行「'+config.name+'」。'+instruction(),requestId:api.createRequestId()}));if(r.schedule?.id&&!once)check(await api.settings.update({values:{scheduleId:r.schedule.id},expectedRevision:settings.revision}));status((language==='en'?'Schedule created: ':'计划已创建：')+(r.schedule?.title||r.schedule?.id||r.state)+(r.schedule?.nextRunAt?' · '+new Date(r.schedule.nextRunAt).toLocaleString():''));}
+const scheduleAttempts=new Map();
+async function schedule(once,due){
+  settings=check(await api.settings.get());
+  if(!once&&settings.values.scheduleId){status(language==='en'?'A schedule already exists. Manage it in SoduWork Automations.':'已有订阅计划；请在 SoduWork 自动化中查看、修改或暂停。');return;}
+  const timing=once?`${due.getFullYear()}年${due.getMonth()+1}月${due.getDate()}日${due.getHours()}点${due.getMinutes()}分执行一次`:'每天早上9点';
+  const params={context:{characterName:config.nickname},text:timing+'，运行「'+config.name+'」。'+instruction()},key=JSON.stringify(params);
+  let attempt=scheduleAttempts.get(key);
+  if(!attempt){attempt={params:{...params,requestId:api.createRequestId()}};scheduleAttempts.set(key,attempt);}
+  // Keep retries on the original request; the host releases definite failures.
+  // A saved schedule only needs its subscription ID persisted again.
+  if(!attempt.receipt)attempt.receipt=check(await api.automation.create(attempt.params));
+  const r=attempt.receipt;
+  if(r.schedule?.id&&!once)check(await api.settings.update({values:{scheduleId:r.schedule.id},expectedRevision:settings.revision}));
+  scheduleAttempts.delete(key);
+  status((language==='en'?'Schedule created: ':'计划已创建：')+(r.schedule?.title||r.schedule?.id||r.state)+(r.schedule?.nextRunAt?' · '+new Date(r.schedule.nextRunAt).toLocaleString():''));
+}
 $('subscribe').onclick=()=>action(()=>schedule(false),$('subscribe'));
 $('trial').onclick=()=>{const due=new Date(Date.now()+3*60000);due.setMinutes(due.getMinutes()-due.getTimezoneOffset());$('schedule-time').value=due.toISOString().slice(0,16);$('schedule-dialog').showModal();};
 $('schedule-cancel').onclick=()=>$('schedule-dialog').close();
