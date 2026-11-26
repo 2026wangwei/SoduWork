@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const native = require('./device-history-native.cjs');
 const archive = require('./device-artifact-archive.cjs');
+const { hasUnresolvedTools } = require('./tool-terminal-receipts.cjs');
 const { withTranscript } = require('./conversation-body.cjs');
 const { mergeNativeEvidence } = require('./history-evidence.cjs');
 const { accountId } = require('../device-auth-request');
@@ -30,7 +31,7 @@ function currentReceiver(row, data, manifest, identity) {
     row.workOwner === require('../platform-connections/runtime.cjs').scope(identity));
 }
 function assertSettled(data) {
-  if (data?.coverage?.unresolvedTools?.length || native.unresolvedTools(data?.snapshot).length)
+  if (hasUnresolvedTools(data))
     throw Object.assign(Error('历史中有工具缺少终结回执，结果尚未确认，暂时只能查看，不能恢复执行或迁移'), { code: 'HISTORY_UNRESOLVED_TOOLS' });
 }
 function pendingTailChanged() {
@@ -432,18 +433,19 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     const recorded = preferRecorded && dialogue.length && (checkTail || continuationPreview) ? withTranscript(data, dialogue) : null;
     const verifyTail = checkTail && (recorded?.unconfirmedUserTail || !data?.snapshot && dialogue.at(-1)?.role === 'user' ||
       manifest?.historyRecovery?.transcriptTail && recorded && recorded !== data);
-    // A newer displayed turn can reach SQLite before the native snapshot does.
-    // Verify that turn on this visit before deciding whether to disable the composer.
+    // Displayed messages and tool receipts can reach the native journal after
+    // the SQLite checkpoint. Recheck outstanding evidence before enabling a new turn.
+    const verifyReceipts = continuationPreview && hasUnresolvedTools(data);
     const localDisplay = preferRecorded && !shared && !verify && dialogue.length > 0 &&
-      !verifyTail && !legacyPi && (!continuationPreview || recorded?.coverage?.complete);
+      !verifyTail && !legacyPi && (!continuationPreview || recorded?.coverage?.complete && !verifyReceipts);
     // A dormant source certifies absence only at the time of its probe. It
     // cannot stand in for an independently archived turn on a later resume.
     const hadDormantSegment = data?.coverage?.sources?.some(source => source.dormant);
     let refreshed = false;
     if (!onlyUpgrade && !localDisplay && (update || legacyPi || !data || !data.coverage?.complete || hadDormantSegment || transcriptError)) {
       try {
-        // Recheck the dormant segment on this open, even if a background read was already in flight.
-        data = await refresh(row.id, { verify: checkTail ? check : verify });
+        // A background read can predate a late receipt or a change to a dormant segment.
+        data = await refresh(row.id, { verify: checkTail || verifyReceipts ? check : verify });
         refreshed = true;
         if (checkTail || continuationPreview) inspected = false;
       }
@@ -532,8 +534,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     if (!dialogue.length || !usesDeviceDialogue(check.evidence()) || localDisplay && recorded?.coverage?.complete) return data;
     const combined = withTranscript(data, dialogue);
     if (!combined?.unconfirmedUserTail || !refreshed || !checkTail || !data?.coverage?.complete ||
-        data.nativeReadError || data.historyProtection || data.imported || data.coverage.unresolvedTools?.length ||
-        native.unresolvedTools(data.snapshot).length || manifest.active?.started !== false ||
+        data.nativeReadError || data.historyProtection || data.imported || hasUnresolvedTools(data) || manifest.active?.started !== false ||
         require('./runtime-segments').read(app, row.id) !== manifest) return combined;
     const last = data.coverage.sources?.at(-1);
     if (!last?.dormant || last.id !== manifest.active.sessionId || last.adapterId !== manifest.active.adapterId) return combined;

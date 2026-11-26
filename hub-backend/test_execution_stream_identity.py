@@ -4,6 +4,38 @@ from app.services import execution_event_policy as policy, runtime_messages
 
 
 class StreamIdentityTests(unittest.TestCase):
+    def test_initial_terminal_acp_calls_reach_the_runner_history_once(self):
+        import tempfile
+        from unittest.mock import patch
+        from app.services.acp_bridge import AcpBridge
+        from app.services.local_stream import _items_from
+
+        for agent in ("kimi", "qwen", "dsh", "opencode", "codex", "codex-harness"):
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as cwd:
+                bridge = AcpBridge([], cwd, agent, "readonly")
+                events = []
+                with patch("app.services.acp_bridge._emit", events.append):
+                    for call_id, status in (("read-ok", "completed"), ("read-fail", "failed"),
+                                            ("read-running", "in_progress"), ("read-waiting", "pending")):
+                        bridge._update({"sessionUpdate": "tool_call", "toolCallId": call_id,
+                                        "title": "Read", "kind": "read", "status": status})
+                    bridge._update({"sessionUpdate": "tool_call_update", "toolCallId": "read-ok",
+                                    "status": "completed"})
+                    for call_id in ("read-ok", "read-ok", "read-running"):
+                        bridge._update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                                        "status": "completed", "content": [{"type": "content", "content": {
+                                            "type": "text", "text": "Verified bytes"}}]})
+                    bridge._update({"sessionUpdate": "tool_call", "toolCallId": "read-ok",
+                                    "title": "Read again", "kind": "read", "status": "completed"})
+                run = {"cli": agent}
+                rows = [row for event in events for row in _items_from(event, run)]
+                self.assertEqual([r["callId"] for r in rows if r["kind"] == "do"],
+                                 ["read-ok", "read-fail", "read-running", "read-waiting", "read-ok"])
+                self.assertEqual([(r["callId"], r["isError"], r["full"]) for r in rows if r["kind"] == "out"],
+                                 [("read-ok", False, ""), ("read-fail", True, ""),
+                                  ("read-ok", False, "Verified bytes"), ("read-running", False, "Verified bytes"),
+                                  ("read-ok", False, "")])
+
     def test_empty_thought_chunks_do_not_split_anonymous_markdown(self):
         import tempfile
         from unittest.mock import patch

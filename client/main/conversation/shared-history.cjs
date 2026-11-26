@@ -467,7 +467,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       ...(localArtifacts && !content.historyProtection &&
         (localArtifacts.archivePending || localArtifacts.archive?.omitted > 0) ? { artifactBackupIncomplete: true } : {}),
       ...(content ? { deviceHistory: true, historyContentState: !content.coverage?.complete && !content.pendingUserTail ? 'partial' :
-        require('./device-history-native.cjs').unresolvedTools(content.snapshot).length || content.coverage?.unresolvedTools?.length
+        require('./tool-terminal-receipts.cjs').hasUnresolvedTools(content)
           ? (retired ? 'available' : 'unresolved-tools') : 'available' } : {}),
       ...(bodyMissing ? { historyContentState: 'missing' } : {}) };
     const canContinue = allowContinuation && previewRow.historyContentState === 'available' &&

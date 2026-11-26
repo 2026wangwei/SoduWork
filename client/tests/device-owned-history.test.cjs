@@ -502,6 +502,52 @@ test('an unpaired native tool call remains readable but blocks recovery and migr
   assert.equal((await require('../main/conversation/native-history-opening.cjs').resolve({ ...f, history: f.history })).readOnly, true);
   assert.match((await f.history.open('one')).snapshot().historyRecovery.reason, /缺少终结回执/);
 });
+test('a continuation preview rechecks an unresolved replica after the terminal receipt arrives', async t => {
+  const f = fixture(t);
+  f.write(2);
+  const entries = fs.readFileSync(f.file, 'utf8').trimEnd().split('\n');
+  const result = entries.pop();
+  fs.writeFileSync(f.file, entries.join('\n') + '\n');
+  await f.history.projectRows([f.row]);
+  await f.history.backfill(f.row.id);
+  const row = f.store.get(f.row.id);
+  const saved = f.store.deviceHistory(row.id);
+  assert.equal(saved.coverage.complete, true);
+  assert.equal(saved.coverage.unresolvedTools.length, 1);
+  assert.equal((await f.store.saveConversationTranscript(row.id, saved.snapshot.messages, {
+    expectedRevision: row.replicaRevision, expectedCatalogRevision: row.revision, expectedTransferId: '',
+  })).ok, true);
+  await f.restart();
+  // Hold a background read taken just before the receipt arrived. Let it finish
+  // once the foreground preview has inspected the saved display transcript.
+  const native = require('../main/conversation/device-history-native.cjs'), read = native.read;
+  const sampled = Promise.withResolvers(), release = Promise.withResolvers();
+  t.mock.method(native, 'read', async args => {
+    const data = await read(args);
+    sampled.resolve();
+    await release.promise;
+    return data;
+  });
+  const background = f.history.backfill(row.id);
+  await sampled.promise;
+  fs.appendFileSync(f.file, result + '\n');
+  const transcript = f.store.conversationTranscript;
+  t.mock.method(f.store, 'conversationTranscript', (...args) => {
+    setImmediate(release.resolve);
+    return transcript(...args);
+  });
+  const view = await f.history.open(row.id, { historyPreview: true, allowContinuation: true });
+  await background;
+  try {
+    assert.equal(view.snapshot().execution.canContinueOnDevice, true);
+    assert.deepEqual(f.store.deviceHistory(row.id).coverage.unresolvedTools, []);
+    const prefix = (await f.history.prepareContinuation(row.id, { refresh: true })).prefix;
+    assert.equal(prefix.tools.length, 1);
+    assert.equal(prefix.tools[0].result, 'Full synthetic receipt');
+    const bundle = await f.history.exportPortable(row.id);
+    assert.deepEqual(bundle.snapshot.tools, prefix.tools);
+  } finally { await view.close(); }
+});
 test('a retired unknown Runner result can start a new local turn only after all executions and admissions are idle', async t => {
   const f = fixture(t), segments = require('../main/conversation/runtime-segments');
   const retired = { sessionId: 'old-runner', adapterId: 'opencode', started: true };

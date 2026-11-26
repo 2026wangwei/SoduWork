@@ -248,6 +248,7 @@ class AcpBridge:
         self.message_stream_emitted = False
         self.message_count = 0
         self.tools: dict[str, str] = {}
+        self.initial_tool_receipts: dict[str, bytes] = {}
         self.codex_tool_output = codex_acp_outcome.ToolOutput(agent_name)
         self.terminals: dict[str, _Terminal] = {}
         self.stderr_head: list[str] = []
@@ -680,6 +681,7 @@ class AcpBridge:
         if kind == "tool_call":
             self._flush_message()
             tool_id = str(update.get("toolCallId") or "")
+            self.initial_tool_receipts.pop(tool_id, None)
             title = str(update.get("title") or update.get("kind") or "Tool")
             self.tools[tool_id] = title
             raw = update.get("rawInput")
@@ -696,19 +698,26 @@ class AcpBridge:
             _emit({"type": "tool_use", "part": {"tool": title, "callId": tool_id,
                    "toolKind": str(update.get("kind") or "")[:40],
                    "state": {"input": args}}})
-            # Codex ACP's image reporter emits its terminal status on the initial
-            # notification and never sends a second update for this call.
-            if self.agent_name not in ("codex", "codex-harness"):
+            # A v1 declaration requires a title. Keep the established Codex
+            # image reporter compatibility for older single-event notices.
+            if self.agent_name not in ("codex", "codex-harness") and not (
+                    isinstance(update.get("title"), str) and update["title"].strip()):
                 return
         if kind in ("tool_call", "tool_call_update"):
-            text = _text(update.get("content"))
-            if update.get("status") in ("completed", "failed"):
-                text = self.codex_tool_output.finish(update, text)
-                _emit({"type": "tool_execution_end",
-                       "toolName": self.tools.get(
-                           str(update.get("toolCallId") or ""), "Tool"),
-                       "toolCallId": str(update.get("toolCallId") or ""),
-                       **self.transition.result_fields(update), "result": text[:2000]})
+            tool_id = update.get("toolCallId")
+            if not isinstance(tool_id, str) or not tool_id or update.get("status") not in ("completed", "failed"):
+                return
+            text = self.codex_tool_output.finish(update, _text(update.get("content")))
+            receipt = {"type": "tool_execution_end", "toolName": self.tools.get(tool_id, "Tool"),
+                       "toolCallId": tool_id, **self.transition.result_fields(update), "result": text[:2000]}
+            # ACP permits the first notification to carry the terminal status.
+            # Some agents repeat it as an update. Preserve changed diagnostics.
+            if kind == "tool_call" or tool_id in self.initial_tool_receipts:
+                digest = hashlib.sha256(json.dumps(receipt).encode()).digest()
+                if self.initial_tool_receipts.get(tool_id) == digest:
+                    return
+                self.initial_tool_receipts[tool_id] = digest
+            _emit(receipt)
             return
         if kind == "usage_update":
             used = update.get("used")
@@ -750,6 +759,7 @@ class AcpBridge:
 
     def _prompt(self, content) -> dict:
         self.prompt_active = True
+        self.initial_tool_receipts.clear()
         self.dsh_root_usage_seen = False
         try:
             result = self.request("session/prompt", {"sessionId": self.session_id, "prompt": content})
