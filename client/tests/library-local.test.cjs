@@ -55,7 +55,7 @@ test('legacy extension loss is identified without writes and explicit repair pre
     assert.equal(listed.filenameIssue, 'check');
     assert.equal(fs.readFileSync(indexPath, 'utf8'), before, 'diagnosis must not migrate or rewrite the index');
     await assert.rejects(f.call('openExternal', { id: original.id }), /格式/);
-    const result = (await f.call('repairFilename', { id: original.id, filename: repaired })).item;
+    const result = (await f.call('updateItem', { id: original.id, title: repaired })).item;
     for (const key of ['id', 'folderId', 'favorite', 'sourceType', 'sourceLabel', 'sessionId', 'conversationTitle',
       'sourceSessionId', 'sourceConversationTitle', 'extra', 'createdAt', 'size', 'contentType']) {
       assert.deepEqual(result[key], original[key], key);
@@ -73,15 +73,29 @@ test('legacy extension loss is identified without writes and explicit repair pre
   }
 });
 
-test('ordinary rename still retains the extension, while explicit repair replaces a truncated extension', async t => {
-  const f = fixture(t), original = await legacyItem(f, 'a'.repeat(158) + '.p', 'unchanged');
-  const renamed = (await f.call('updateItem', { id: original.id, title: 'correct.pdf' })).item;
-  assert.equal(renamed.filename, 'correct.pdf.p');
-  assert.equal(renamed.contentType, 'application/octet-stream');
-  const repaired = (await f.call('repairFilename', { id: original.id, filename: 'correct.pdf' })).item;
-  assert.equal(repaired.filename, 'correct.pdf');
-  assert.equal((await f.call('readBinary', { id: original.id })).name, 'correct.pdf');
-  const note = (await create(f, { kind: 'note', filename: 'note.txt' })).item;
+test('rename preserves healthy extensions and repairs only a legacy suffix explicitly completed by the user', async t => {
+  const f = fixture(t), correctMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const inputs = [
+    { filename: 'ordinary.doc', contentType: 'application/msword', title: 'report.pdf', expected: 'report.pdf.doc' },
+    { filename: 'a'.repeat(156) + '.doc', contentType: correctMime, title: 'recovered.docx', expected: 'recovered.docx' },
+    { filename: 'b'.repeat(156) + '.doc', contentType: 'application/msword', title: 'budget.docx', expected: 'budget.docx.doc' },
+    { filename: 'c'.repeat(156) + '.doc', contentType: 'application/octet-stream', title: 'unknown.docx', expected: 'unknown.docx.doc' },
+    { filename: 'd'.repeat(156) + '.foo', contentType: 'application/octet-stream', title: 'different.txt', expected: 'different.txt.foo' },
+    { filename: 'e'.repeat(156) + '.foo', contentType: 'application/octet-stream', title: 'different.foobar', expected: 'different.foobar.foo' },
+    { filename: 'f'.repeat(158) + '.p', contentType: 'image/png', title: 'different.pdf', expected: 'different.pdf.p' },
+    { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: 'application/msword', title: 'next.docx', expected: 'next.docx.doc' },
+    { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: correctMime, title: 'fixed.docx', expected: 'fixed.docx' },
+    { filename: 'ordinary.docx.doc', contentType: correctMime, title: 'unchanged-type.docx', expected: 'unchanged-type.docx.doc' },
+    { filename: 'recovered.pdf.p', storedTitle: 'recovered.pdf', title: 'old-report.pdf', expected: 'old-report.pdf' },
+  ];
+  for (const { filename, contentType, storedTitle, title, expected } of inputs) {
+    const original = await legacyItem(f, filename, 'original bytes', { contentType, title: storedTitle || filename });
+    const renamed = (await f.call('updateItem', { id: original.id, title })).item;
+    assert.equal(renamed.filename, expected); assert.equal(renamed.contentType, original.contentType);
+    const binary = await f.call('readBinary', { id: original.id });
+    assert.equal(binary.name, expected); assert.equal(Buffer.from(binary.data, 'base64').toString(), 'original bytes');
+  }
+  const note = (await f.call('createItem', { kind: 'note', title: 'note', content: 'keep' })).item;
   assert.equal((await f.call('repairFilename', { id: note.id, filename: 'note.md' })).item.kind, 'note');
 });
 

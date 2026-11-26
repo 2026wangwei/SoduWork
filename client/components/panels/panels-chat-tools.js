@@ -234,10 +234,6 @@
   function unexecuted(item) {
     return item?.state === 'cancelled' && ['access-change', 'output-limit'].includes(item.cancelReason) && item.isError === false;
   }
-  function finishedCommand(item) {
-    return Boolean(item.id) && /^(?:done|completed|success|error|failed|cancelled)$/i.test(item.state) &&
-      !unexecuted(item) && item.phase !== 'preparing';
-  }
   function recordOwner(ctx) {
     return JSON.stringify([ctx._ref, ctx._viewEpoch, ctx._draftScopeEpoch, ctx._draftOwnerScope?.()]);
   }
@@ -276,19 +272,14 @@
     if (!items.length) return '';
     const summary = batchSummary(items);
     const id = String(key || (items[0] && items[0].id) || 'batch');
-    let detail = summary.detail;
     if (summary.commandsOnly) {
-      if (summary.errors) detail = summary.errors + ' 项异常';
-      else if (summary.state === 'running') detail = '';
-    }
-    const detailHtml = detail ? '<span class="ntool-batch-detail">' + esc(detail) + '</span>' : '';
-    if (summary.commandsOnly && !items.some(finishedCommand)) {
       return '<div class="ntool-batch ' + summary.state +
         '" data-tool-node="batch:commands:' + esc(id) + '">' +
         '<div class="ntool-batch-head ntool-summary">' + icon(items[0]) +
           '<span class="ntool-batch-title">' + esc(summary.title) + '</span>' +
           (summary.total > 1 ? '<span class="ntool-batch-count">' + summary.total + ' 项</span>' : '') +
-          detailHtml +
+          (summary.errors ? '<span class="ntool-batch-detail">' + summary.errors + ' 项异常</span>' :
+            summary.detail && summary.state !== 'running' ? '<span class="ntool-batch-detail">' + esc(summary.detail) + '</span>' : '') +
         '</div></div>';
     }
     const rows = typeof itemHtml === 'function' ? items.map(itemHtml).join('') : '';
@@ -298,7 +289,7 @@
         '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
         icon(items[0]) +
         "<span class=\"ntool-batch-copy\"><b class=\"ntool-batch-title\">" + esc(summary.title) + '</b>' +
-          detailHtml + '</span>' +
+          (summary.detail ? '<span class="ntool-batch-detail">' + esc(summary.detail) + '</span>' : '') + '</span>' +
         (summary.total > 1 ? '<span class="ntool-batch-count">' + summary.total + ' 项</span>' : '') +
         '<svg class="ntool-batch-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>' +
       '</button><div class="ntool-batch-body">' + rows + '</div></div>';
@@ -411,14 +402,15 @@
           : '此操作在执行前因权限调整而取消，将按新权限继续当前任务。') + '</pre>',
       };
     }
-    // Commands stay summaries. Only an explicit click may open their recorded input and output.
+    // Conversation command cards show status only, without expandable command/receipt details or hover payloads.
+    // Avoid reading potentially large result/partial payloads here; execution records retain them intact.
     if (isCommandTool(t)) {
       const done = t.state !== 'running';
       const mcp = mcpView(t, '', done);
       if (mcp) return { ...mcp, summaryOnly: true, body: '', tip: '' };
       return {
         title: done ? (t.isError || /^(?:error|failed|cancelled)$/i.test(t.state) ? '命令执行异常' : '运行了命令') : '正在运行命令',
-        sub: '', commandOnly: true, summaryOnly: true, recordAvailable: finishedCommand(t), body: '', tip: '',
+        sub: '', commandOnly: true, summaryOnly: true, body: '', tip: '',
       };
     }
     if (t.name === 'generate_image') return {
