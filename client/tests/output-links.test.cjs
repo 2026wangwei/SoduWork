@@ -32,6 +32,17 @@ test('an explicit screenshot evidence path never falls back to an unrelated same
   }
   assert.equal(links.fileTarget('homepage.png',[asset]),asset,'bare legacy filenames retain their existing lookup');
 });
+test('staged links require the receipt for the exact namespace and relative path', () => {
+  const root = '.soduwork-drafts/20a6cb86-e678-4633-8a27-916226538839/';
+  const file = { artifactId: 'version:one', name: '春天的短文.txt', relative: '写作/春天的短文.txt' };
+  file.deliveryRelativePath = root + file.relative;
+  for (const resolve of [links.fileTarget, links.workspaceFileTarget]) {
+    assert.equal(resolve(file.deliveryRelativePath, [file]), file);
+    for (const target of [root + file.name, root + '../' + file.relative, '/' + file.deliveryRelativePath, file.deliveryRelativePath.replace('20a6', '30a6')])
+      assert.equal(resolve(target, [file]), null);
+    assert.equal(resolve(file.deliveryRelativePath, [file, { ...file, artifactId: 'version:two' }]), null);
+  }
+});
 test('Chinese filenames and word boundaries',()=>{
   assert.equal(links.mentions('生成 report.html 和 汇报 方案.pdf',files).length,2);
   assert.equal(links.mentions('other-report.html.bak',files).length,0);

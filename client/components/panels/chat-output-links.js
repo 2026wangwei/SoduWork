@@ -15,6 +15,76 @@
   };
   const basename = value => normalize(value).split('/').pop();
   const explicitWeb = value => /^(?:https?:)?\/\//i.test(String(value || ''));
+  // A model may spell a file as an internal write path. Keep that reference
+  // inert until the host supplies a matching, turn-scoped artifact receipt.
+  const draftDirectory = /(?:\.[\\/])?\.soduwork-drafts[\\/][0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:[\\/]|(?=$|[\s，。；：]))/gi;
+  const draftFile = /^[^\r\n<>"`|，。！？；：]*?\.[a-z0-9]{1,12}(?=$|\.(?![\w.-])|[\s,!?:;，。！？；：、）】》」”’)'\]\u3400-\u9fff])/i;
+  function stagedTarget(value, files) {
+    const relative = String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const matches = asFiles(files).filter(file => !file.deleted && file.artifactId && file.deliveryRelativePath === relative);
+    return matches.length === 1 ? matches[0] : null;
+  }
+  function presentDeliveryPaths(html, streaming = false) {
+    if (!html.includes('.soduwork-drafts')) return html;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const doc = template.ownerDocument, content = template.content;
+    const filename = path => path.split(/[\\/]/).pop();
+    function reference(path, label) {
+      const span = doc.createElement('span');
+      span.dataset.stagedOutput = path;
+      span.textContent = label;
+      return span;
+    }
+    for (const anchor of content.querySelectorAll('a')) {
+      if (anchor.closest('pre')) continue;
+      const raw = anchor.getAttribute('data-output-href') || anchor.getAttribute('href') || '';
+      if (explicitWeb(raw) || !raw.includes('.soduwork-drafts') && !anchor.textContent.includes('.soduwork-drafts')) continue;
+      let path = raw;
+      try { path = decodeURIComponent(raw); } catch (_) { /* literal percent */ }
+      const label = anchor.textContent.includes('.soduwork-drafts') ? filename(path) : anchor.textContent;
+      if (path.includes('.soduwork-drafts')) anchor.replaceWith(reference(path, label));
+      else anchor.textContent = label;
+    }
+    const walker = doc.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.nodeValue.includes('.soduwork-drafts') && !node.parentElement?.closest('pre,a,[data-staged-output]')) nodes.push(node);
+    }
+    for (const node of nodes) {
+      const source = node.nodeValue, fragment = doc.createDocumentFragment();
+      const directories = [...source.matchAll(draftDirectory)];
+      // Inline code often consists of the single filename. Preserve commands
+      // and other examples whose meaning depends on the literal path.
+      if (node.parentElement?.closest('code') && directories.length) {
+        const before = source.slice(0, directories[0].index).trimStart();
+        if (directories.length !== 1 || /\s/.test(before) || before && !before.endsWith('/') && !before.endsWith('\\')) continue;
+      }
+      let end = 0;
+      for (const [i, directory] of directories.entries()) {
+        const before = source.slice(end, directory.index);
+        // Include an absolute/local prefix in the hidden reference. A different
+        // project root must never gain access via the shared filename.
+        const prefix = before.match(/[^\s<>"'`（(，。；：]*[\\/]$/)?.[0] || '';
+        if (explicitWeb(prefix) || !prefix && /[\w.-]$/.test(before)) continue;
+        const start = directory.index - prefix.length;
+        const from = directory.index + directory[0].length;
+        const rest = source.slice(from, directories[i + 1]?.index);
+        const path = rest.match(draftFile)?.[0] || rest.match(/^[^\s，。！？；：、<>"'`()）【】]*/)?.[0] || '';
+        const boundary = from + path.length;
+        fragment.append(source.slice(end, start), reference(source.slice(start, boundary), filename(path) || '成果目录'));
+        end = boundary;
+      }
+      let tail = source.slice(end);
+      if (streaming) {
+        // Render a partial UUID as a placeholder between provider tokens.
+        tail = tail.replace(/(?<![\w./\\-])(?:\.\/)?\.soduwork-drafts(?:[\\/][\da-f-]{0,36})?$/i, '…');
+      }
+      if (end || tail !== source) { fragment.append(tail); node.replaceWith(fragment); }
+    }
+    return template.innerHTML;
+  }
   // Ownership and edits require the exact workspace path. A basename fallback
   // is useful for prose links, but must never attach another directory's diff.
   function workspaceFileTarget(value, files, cwd) {
@@ -40,6 +110,7 @@
       return root && fold(text).startsWith(fold(prefix)) ? fold(text.slice(prefix.length)) : '';
     };
     const target = relative(raw);
+    if (!absolute(raw) && target.split('/').includes('.soduwork-drafts')) return stagedTarget(raw, files);
     const matches = asFiles(files).filter(file => {
       if (root && file.path && absolute(clean(file.path)) && !relative(file.path)) return false;
       if (absolute(raw) && file.path && fold(clean(file.path)) === fold(raw)) return true;
@@ -56,6 +127,11 @@
     const target = normalize(raw);
     const exact = (files || []).filter(file => [file.relative, file.name, file.path]
       .filter(Boolean).some(label => normalize(label) === target));
+    if (!exact.length && target.split('/').includes('.soduwork-drafts')) {
+      let href = raw;
+      try { href = decodeURIComponent(raw); } catch (_) { /* literal percent */ }
+      return stagedTarget(href, files);
+    }
     // A missing historical screenshot must not open an unrelated same-name
     // website asset. Preserve the dedicated evidence path through legacy URLs.
     const evidence = /(?:^|\/)(\.soduwork\/evidence\/.*)$/.exec(target)?.[1];
@@ -238,7 +314,16 @@
     for (const message of replies) {
       const named = new Set();
       for (const body of message.querySelectorAll('.ntext')) {
-        for (const hit of mentions(body.textContent || '', index, '', true)) named.add(hit.file);
+        const references = body.querySelectorAll('[data-staged-output]');
+        const prose = references.length ? body.cloneNode(true) : body;
+        if (references.length) {
+          for (const ref of prose.querySelectorAll('[data-staged-output]')) ref.remove();
+          for (const ref of references) {
+            const file = stagedTarget(ref.dataset.stagedOutput, unassigned);
+            if (file) named.add(file);
+          }
+        }
+        for (const hit of mentions(prose.textContent || '', index, '', true)) named.add(hit.file);
         for (const anchor of body.querySelectorAll('a')) {
           const target = anchor.getAttribute('data-output-href') || anchor.getAttribute('href');
           const file = workspaceFileTarget(target, unassigned);
@@ -307,6 +392,14 @@
       return byMessage.get(owner);
     }
     let count=0;
+    for (const reference of root.querySelectorAll('.ntext [data-staged-output],.nmd [data-staged-output]')) {
+      if (reference.closest('.user,.ntool,.nthink,pre')) continue;
+      const file = stagedTarget(reference.dataset.stagedOutput, localFiles(reference));
+      const owner = reference.closest('.nmsg.ai');
+      if (file && (file.versionId || !snapshot?.localReplica && owner?.dataset.deliveryCurrent !== 'false')) {
+        reference.replaceWith(button(doc, file, reference.textContent)); count++;
+      }
+    }
     root.querySelectorAll('.ntext a,.nmd a').forEach(anchor => {
       if (anchor.closest('.user,.ntool,.nthink,pre')) return;
       const href = anchor.getAttribute('data-output-href') || anchor.getAttribute('href') || '';
@@ -320,7 +413,7 @@
     const turnIndexes = new Map();
     const walker=doc.createTreeWalker(root,filter.SHOW_TEXT,{acceptNode(node){
       const parent=node.parentElement;
-      return parent && !parent.closest('a,button,pre,textarea,input,[contenteditable="true"],.user,.ntool,.nthink,.ndelivery,.noutput-library,.noutput-image,.noutput-video,.nplugin-draft') &&
+      return parent && !parent.closest('a,button,pre,textarea,input,[data-staged-output],[contenteditable="true"],.user,.ntool,.nthink,.ndelivery,.noutput-library,.noutput-image,.noutput-video,.nplugin-draft') &&
         String(node.nodeValue||'').trim() ? filter.FILTER_ACCEPT : filter.FILTER_REJECT;
     }});
     const nodes=[]; while(walker.nextNode())nodes.push(walker.currentNode);
@@ -432,7 +525,7 @@
     // A cloud run may return a reachable URL (preview/deployment/PR) without
     // attachments. Still run the delivery decorator so that URL-only output
     // is visible and clickable in the conversation.
-    if (files.length) linkify(root,files,(ref || '') + '\u0000' + filesSig,snapshot.localReplica === true);
+    if (files.length) linkify(root,files,(ref || '') + '\u0000' + filesSig,snapshot.localReplica === true,snapshot);
     if (files.length || historyMedia) inlineImages(root, files, ref, snapshot.localReplica === true, snapshot.historyImagesLoading);
     if (files.length) {
       inlineVideos(root,files,ref);
@@ -645,7 +738,8 @@
             // Without a recorded screenshot, the verified page can still open in the workbench.
             if (historyMedia && /\.html?$/i.test(relative)) {
               const page = workspaceFileTarget(relative, available);
-              if (page?.artifactId && !page.deleted) return page;
+              if (page?.versionId && !page.deleted && (page.turnId === message.dataset.deliveryTurn ||
+                  (message.dataset.deliveryArchiveIds || '').split(' ').includes(key(page)))) return page;
             }
             return originals.length === 1 ? originals[0] : null;
           });
@@ -1133,7 +1227,7 @@
   // keyed by (ref + files) signatures so they can never leak across sessions,
   // and the WeakMap drops entries for replaced nodes on its own.
   function resetDecorateCache() { decorateMemo = null; }
-  const api={filesForTurn,deliveryTurns,scoped,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
+  const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
     isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,
     isPluginDraft,pluginDrafts,_supersededDraftCard:supersededDraftCard,_claimInlineMedia:claimInlineMedia,
     _buildLinkIndex:buildLinkIndex,_decorateStateSignature:decorateStateSignature,resetDecorateCache};
