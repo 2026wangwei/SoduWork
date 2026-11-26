@@ -589,6 +589,10 @@
       (item.acceptanceCriteria || []).map(text => '<li>' + esc(text) + '</li>').join('') + '</ul></details>').join('');
     const canArrange = global.RequirementAssignment?.eligible(task);
     const reworkPending = task.workRouting && task.workRouting.reworkPending || null;
+    const delivery = R.deliveryProgress(task, ctx);
+    const chatAction = R.canOpenConversation(task, global.SoduWorkAPI?.clientId) && !reworkPending
+      ? '<button type="button" data-rq-chat>打开执行会话（仅本机）</button>' : '';
+    const recoveryAction = delivery?.interrupted && task.canContinueExecution === true ? chatAction : '';
     const archive = R.maintenance(task, phase === 'closed' ? 'restore' : 'archive'), removal = R.maintenance(task, 'delete');
     const locked = permission => permission.disabled ? ' disabled data-rq-locked aria-disabled="true" title="' + esc(permission.reason) + '"' : '';
     const maintenanceReason = [archive, removal].find(item => item.visible && item.disabled)?.reason;
@@ -609,13 +613,13 @@
       '<button type="button" data-rq-edit-cancel>取消</button></div>' : '<div class="rq-detail-actions rq-detail-toolbar">' +
       (R.canTriage(task) && ['intake', 'clarifying'].includes(phase) ? '<button type="button" class="rq-primary" data-rq-ready>移至待开始</button>' : '') +
       (canArrange ? '<button type="button" class="rq-primary" data-rq-assign>安排执行</button>' : '') +
-      (R.canOpenConversation(task, global.SoduWorkAPI?.clientId) && !reworkPending ? '<button type="button" data-rq-chat>打开执行会话（仅本机）</button>' : '') +
+      (recoveryAction ? '' : chatAction) +
       (canEdit ? '<button type="button" data-rq-edit>编辑</button>' : '') +
       (more ? '<details class="rq-detail-more"><summary>更多</summary><div class="rq-detail-more-menu">' + more + '</div></details>' : '') + '</div>';
     root.querySelector('.rq-detail-content').innerHTML = '<div class="rq-detail-title-sr">' + heading + '</div>' +
       (!editing && !['closed', 'delivered'].includes(phase) ? '<p class="rq-detail-next"><b>下一步</b><span>' + esc(step.text) + '</span></p>' : '') +
       '<p class="rq-detail-error" data-rq-error role="alert" hidden></p>' + form +
-      (editing ? '' : executionHtml(ctx) +
+      (editing ? '' : executionHtml(ctx, delivery, recoveryAction) +
       (migrated ? '<section class="rq-sources"><h4>原需求记录</h4>' + migrated + '</section>' : '') +
       '<section class="rq-detail-materials"><div class="rq-material-head"><h4>' + sectionIcon('materials') + '相关材料</h4>' +
       (R.canManageMaterials(task) ? '<button type="button" data-rq-add-files>添加材料</button><input type="file" id="rqFileInput" multiple hidden>' : '') +
@@ -692,7 +696,7 @@
     return item?.status === 'done' && !item?.reviewedAt &&
       item?.createdBy === global.__teamCap?.meId;
   }
-  function executionHtml(ctx) {
+  function executionHtml(ctx, delivery, recoveryAction) {
     if (task.canViewExecution === false) return '';
     const progress = (task.progress || []).slice().reverse();
     const reviewed = task.reviewedAt;
@@ -709,7 +713,6 @@
     const hasExecution = task.maintenanceBlocked === true || ['running', 'dispatching', 'done'].includes(task.ai?.state) ||
       ['queued', 'starting', 'running', 'waiting'].includes(routing.conversationTurn?.state);
     const preparing = ['intake', 'clarifying', 'ready'].includes(phase) && !hasExecution && task.ai?.state !== 'failed';
-    const delivery = R.deliveryProgress(task, ctx);
     const awaitingReview = phase === 'reviewing' || R.approval(task, ctx)?.action === 'review' || R.waitingOn(task, ctx).length > 0;
     const deliveryState = reviewed ? (closedDone ? '已验收'
         : hasEngineering ? '已验收 · 待合并' : '已验收 · 办结受阻')
@@ -771,7 +774,7 @@
       (delivery?.guidance ? '<p class="rq-acceptance-waiting" role="status">' + esc(delivery.guidance) + '</p>' : '') +
       (delivery?.reason ? '<p class="rq-acceptance-waiting" data-user-content>' + esc(delivery.reason) + '</p>' : '') + reworkCard +
       (approvalCard ? '<div data-rq-approval-card>' + approvalCard + '</div>' : waitingOthers) +
-      '<div class="rq-delivery-actions">' +
+      '<div class="rq-delivery-actions">' + recoveryAction +
       (artifact ? '<button type="button" data-rq-artifact>查看交付链接 <span aria-hidden="true">↗</span></button>' : '') +
       '<button type="button" data-rq-export-summary' + (summaryExport?.request === seq ? ' disabled aria-busy="true"' : '') + '>导出验收摘要</button>' +
       '<span data-rq-export-status role="status" aria-live="polite">' + (summaryExport?.request === seq ? '正在导出验收摘要…' : '') + '</span></div>' +

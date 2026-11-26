@@ -31,11 +31,16 @@ function resultState(result) {
   if (result.paused || result.recovering) return 'waiting';
   const s = result.snapshot || {};
   const execution = s.execution || {};
-  if (/^(error|failed|blocked|incomplete|unreachable|no-output)$/.test(s.status || '') ||
-      /^(blocked|failed|incomplete)$/.test((execution.quality || {}).phase || '') ||
-      /^(blocked|failed|incomplete)$/.test((execution.harness || {}).state || '')) return 'failed';
+  const quality = execution.quality || {};
+  // Pi retains the last goal audit after returning to ordinary chat. Its
+  // phase, harness and derived pause describe that goal, not this submission.
+  const goalApplies = quality.required !== false;
+  if (/^(error|failed|blocked|incomplete|unreachable|no-output)$/.test(s.status || '')) return 'failed';
+  const failedGoal = /^(blocked|failed|incomplete)$/;
+  if (goalApplies && (failedGoal.test(quality.phase) || failedGoal.test(execution.harness?.state))) return 'failed';
   if (/^(aborted|cancelled|stopped)$/.test(s.status || '')) return 'stopped';
-  if (s.pendingUi || /waiting|paused/.test(s.status || '') || execution.paused) return 'waiting';
+  const executionPaused = execution.paused && (goalApplies || quality.phase !== 'paused' || execution.limitRequest);
+  if (s.pendingUi || /waiting|paused/.test(s.status || '') || executionPaused) return 'waiting';
   return 'completed';
 }
 

@@ -228,7 +228,8 @@ async send(text, turnAttachments, sendOptions) {
       let connectors = null;
       let modelRequestError = null;
       try {
-        const stopped = () => interrupted() || ctx.closed || Boolean(ctx.run.stopReason) || ctx.goalCancelled;
+        const turnCancelled = () => interrupted() || ctx.closed || ctx.goalCancelled;
+        const stopped = () => turnCancelled() || Boolean(ctx.run.stopReason);
         connectors = await require('./connector-turn.cjs').prepare(resolvedPlugins.applicationUnavailable
           ? { ...ctx.opts, resolveConnectors: undefined } : ctx.opts, stopped, pluginGrant?.servers || []);
         if (stopped()) return { ok: true, cancelled: true, manualStop: true };
@@ -295,22 +296,24 @@ async send(text, turnAttachments, sendOptions) {
           [turn.promptText, materialUnderstanding.eligible ? materialUnderstanding.prompt : ''].filter(Boolean).join('\n\n'));
         await ctx.beginTurnJournal(turn);
         // Native recovery remains part of the original logical submission.
-        if (!(turn.internal && turn.runtimeRecovery) || !ctx.run.pluginGenerationTurn) ctx.run.pluginGenerationTurn = {};
+        if (!(turn.internal && turn.runtimeRecovery) || !ctx.run.pluginGenerationTurn)
+          ctx.run.pluginGenerationTurn = { permissionRevision: ctx.accessPolicy?.revision };
         const pluginGenerationTurn = ctx.run.pluginGenerationTurn;
-        const permissionRevision = ctx.accessPolicy?.revision;
-        const repairCancelled = () => interrupted() || ctx.closed || ctx.goalCancelled ||
-          ctx.liveAccess.changing() || Boolean(ctx.accessChanges.pending()) || ctx.accessPolicy?.revision !== permissionRevision;
+        // An approved policy change can continue this user turn. A hidden
+        // plugin repair may only use the policy captured before generation.
+        const repairAllowed = () => !ctx.liveAccess.changing() && !ctx.accessChanges.pending() &&
+          ctx.accessPolicy?.revision === pluginGenerationTurn.permissionRevision;
         pluginGate = await require('./plugin-generation-gate.cjs').begin({
           handle: ctx.handle, app: ctx.opts.app, identity: ctx.identity, logicalOwner: pluginGenerationTurn,
           selectedPluginIds: effectivePluginIds,
-          cancelled: () => repairCancelled() || Boolean(ctx.run.stopReason),
-          pauseConfirmed: () => Boolean(ctx.limitRequest) && !repairCancelled(),
+          cancelled: stopped, repairAllowed,
+          pauseConfirmed: () => Boolean(ctx.limitRequest) && !turnCancelled() && repairAllowed(),
           changed: () => ctx._emit({ kind: 'plugin-validation' }),
           repair: async prompt => {
-            await ctx._promptComplete(prompt, { pluginRepair: true });
+            await ctx._promptComplete(prompt, { pluginRepair: true, canResume: repairAllowed });
             const snapshot = ctx._snapshot();
             const completion = snapshot.completion || {};
-            const cancelled = repairCancelled();
+            const cancelled = turnCancelled();
             const paused = Boolean(ctx.limitRequest);
             return { ok: cancelled || paused && completion.reason !== 'error' ||
                 ctx.acc.status() === 'idle' && !ctx.run.stopReason,

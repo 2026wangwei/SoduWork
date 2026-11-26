@@ -99,9 +99,10 @@ function create({ app, identityOf, request, intervalMs = 15000 }) {
       catch (_) { return {pending: true}; }
     }
     if (started && !row.steps.some(step => step.action === 'started')) row.steps.unshift({action: 'started'});
-    if (delivery && !row.steps.some(step => step.action === 'deliver')) {
-      const terminalIndex = row.steps.findIndex(step => ['complete', 'fail', 'wait', 'cancel'].includes(step.action));
-      row.steps.splice(terminalIndex < 0 ? row.steps.length : terminalIndex, 0, {action: 'deliver', payload: delivery});
+    if (delivery && !row.steps.some(step => step.action === 'deliver' && step.payload?.outcome === delivery.outcome)) {
+      // An interrupted turn's files are process evidence. A resumed completion
+      // must send its own frozen bytes after any earlier evidence and wait.
+      row.steps.push({action: 'deliver', payload: delivery});
     }
     if (terminal?.action === 'wait' && terminal.deliveryIssue) {
       const waitingIndex = row.steps.findIndex(step => step.action === 'wait');

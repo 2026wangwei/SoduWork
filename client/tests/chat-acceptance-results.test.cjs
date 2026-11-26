@@ -490,6 +490,78 @@ function selfReviewFixture() {
   return { ...f, entry };
 }
 
+function lockEssay(entry, approval, id, turnId) {
+  const sourceRef = 'conversation:native-chat';
+  const file = {id: 'file-' + id, name: '冬天.md', sourceRef};
+  approval.taskId = entry.taskId;
+  approval.artifactVersionId = id;
+  approval.confirmation = {lockedArtifact: {id, taskId: entry.taskId, sourceRef, manifest: {primary: [file]}}};
+  (entry.trace.attachments ||= []).push({...file, taskId: entry.taskId, role: 'output',
+    evidenceMeta: {conversationId: 'native-chat', identifier: turnId}});
+}
+
+test('two reviews in one clock second follow their exact frozen attachments and native submissions', () => {
+  const f = selfReviewFixture(), messages = nativeTurnMessages(), first = f.entry.trace.approvals[0];
+  for (const event of f.entry.trace.timeline) event.at += 1000;
+  messages.push({role:'user', sentAt:1030, submissionId:'revision'}, {role:'assistant', done:true, completedAt:1060,
+    blocks:[{kind:'text', text:'Revision complete', done:true}]}, {role:'user', sentAt:1100, submissionId:'unrelated'});
+  messages[0].sentAt = 1005; messages[1].completedAt = 1020;
+  first.createdAt = 1000;
+  const second = {...first, id:'second-review'};
+  f.entry.trace.approvals.push(second);
+  f.entry.trace.timeline.push({kind:'conversation.turn', at:1030,
+    detail:{conversationId:'native-chat',turnId:'revision',executor:'native',state:'running'}});
+  lockEssay(f.entry, first, 'v1', 'native-turn');
+  lockEssay(f.entry, second, 'v2', 'revision');
+  f.entry.trace.approvals.reverse(); f.entry.trace.attachments.reverse();
+  const positions = f.create().timeline([f.entry], messages);
+  assert.deepEqual(Array.from(positions, card => [JSON.parse(card.key)[1], card.index]), [['review',2],['second-review',4]]);
+});
+
+test('conflicting locked delivery provenance cannot reassign a review to a convenient nearby turn', () => {
+  for (const mismatch of ['task', 'version', 'conversation', 'absent attachment', 'mixed turns', 'cancelled']) {
+    const f = selfReviewFixture(), approval = f.entry.trace.approvals[0];
+    lockEssay(f.entry, approval, 'v1', 'native-turn');
+    const artifact = approval.confirmation.lockedArtifact, attachment = f.entry.trace.attachments[0];
+    if (mismatch === 'task') attachment.taskId = 'other-task';
+    if (mismatch === 'version') artifact.id = 'different-version';
+    if (mismatch === 'conversation') attachment.evidenceMeta.conversationId = 'other-chat';
+    if (mismatch === 'absent attachment') f.entry.trace.attachments = [];
+    if (mismatch === 'mixed turns') {
+      artifact.manifest.primary.push({...artifact.manifest.primary[0], id:'another'});
+      f.entry.trace.attachments.push({...attachment, id:'another', evidenceMeta:{...attachment.evidenceMeta, identifier:'another-turn'}});
+    }
+    if (mismatch === 'cancelled') f.entry.trace.timeline.at(-1).detail.state = 'cancelled';
+    assert.equal(f.create().timeline([f.entry], nativeTurnMessages())[0].index, 1, mismatch);
+  }
+});
+
+test('legacy locked primary files preserve native timeline and imported output positioning', () => {
+  for (const missing of ['attachment evidence', 'file source', 'version task']) {
+    const f = selfReviewFixture(), approval = f.entry.trace.approvals[0];
+    lockEssay(f.entry, approval, 'v1', 'native-turn');
+    if (missing === 'attachment evidence') delete f.entry.trace.attachments[0].evidenceMeta;
+    if (missing === 'file source') delete approval.confirmation.lockedArtifact.manifest.primary[0].sourceRef;
+    if (missing === 'version task') delete approval.confirmation.lockedArtifact.taskId;
+    const messages = nativeTurnMessages();
+    assert.equal(f.create().timeline([f.entry], messages)[0].index, 2, missing);
+    f.entry.trace.timeline = [];
+    Object.assign(messages[1], {taskId: 'task', taskOutputKey: 'imported-answer'});
+    assert.equal(f.create().timeline([f.entry], messages)[0].index, 2, missing);
+  }
+});
+
+test('later trace hydration restores the exact output position on the same open conversation', () => {
+  const f = selfReviewFixture(), approval = f.entry.trace.approvals[0], messages = nativeTurnMessages();
+  approval.createdAt = 1;
+  lockEssay(f.entry, approval, 'v1', 'native-turn');
+  const attachments = f.entry.trace.attachments, helper = f.create();
+  f.entry.trace.attachments = [];
+  assert.equal(helper.timeline([f.entry], messages)[0].index, 0);
+  f.entry.trace.attachments = attachments;
+  assert.equal(helper.timeline([f.entry], messages)[0].index, 2);
+});
+
 test('native Pi review follows its final answer without treating native messages as projected task outputs', () => {
   const f = selfReviewFixture(), messages = nativeTurnMessages();
   assert.equal(messages[0].submissionId, 'native-turn');

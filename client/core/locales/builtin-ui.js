@@ -9,6 +9,7 @@
     "正在修复插件草稿…": ["Repairing the plugin draft…","プラグインの下書きを修正しています…","플러그인 초안을 수정하는 중…"],
     "正在检查插件草稿": ["Checking the plugin draft","プラグインの下書きを確認中","플러그인 초안 확인 중"],
     "正在修复插件草稿": ["Repairing the plugin draft","プラグインの下書きを修正中","플러그인 초안 수정 중"],
+    '会话权限已变更，插件自动修复已中断。请在当前权限下重新检查插件。': ['Session permissions changed and automatic plugin repair stopped. Check the plugin again with the current permissions.', 'セッションの権限が変更され、プラグインの自動修正が中断されました。現在の権限でプラグインを再確認してください。', '세션 권한이 변경되어 플러그인 자동 수정이 중단되었습니다. 현재 권한으로 플러그인을 다시 확인하세요.'],
     "插件草稿未通过检查，请修复后再安装": ["The plugin draft failed validation. Repair it before installing.","プラグインの下書きが検証に失敗しました。修正してからインストールしてください。","플러그인 초안이 검증에 실패했습니다. 수정 후 설치하세요."],
     '未找到该账号，请检查输入是否正确。': ['Account not found. Check that you entered it correctly.', 'アカウントが見つかりません。入力内容を確認してください。', '계정을 찾을 수 없습니다. 입력한 계정이 올바른지 확인하세요.'],
     '密码不正确，请重新输入。': ['Incorrect password. Please try again.', 'パスワードが正しくありません。もう一度入力してください。', '비밀번호가 올바르지 않습니다. 다시 입력하세요.'],

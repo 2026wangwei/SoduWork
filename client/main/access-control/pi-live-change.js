@@ -69,7 +69,7 @@ function create({ current, transition, changed = () => {}, stopped = () => false
       }).finally(() => { changing = null; changed(); });
       changed(); return changing;
     },
-    async run(operation) {
+    async run(operation, canResume) {
       activeRuns++;
       try {
         let seen = generation, cancellation = cancelled, value, failure;
@@ -77,7 +77,7 @@ function create({ current, transition, changed = () => {}, stopped = () => false
         while (changing || seen !== generation) {
           const work = changing; seen = generation;
           if (work) await work;
-          if (closed || cancellation !== cancelled || stopped()) return value;
+          if (closed || cancellation !== cancelled || stopped() || (canResume && !canResume())) return value;
           // An aborted model/permission wait is continued once, in the same
           // native history. No new user turn or conversation queue item is made.
           failure = null;

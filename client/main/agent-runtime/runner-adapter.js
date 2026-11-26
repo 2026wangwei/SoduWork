@@ -1692,12 +1692,13 @@ async function createRunnerHandle(request, defaults, initialSession) {
     const owner = handle.deliveryOwner;
     const account = require('../device-auth-request').accountScopeKey(identity);
     const stopped = () => Boolean(state.disposed || state.cancelRequested || state.goalPaused || stopRequested() || cancellation !== observationCancellation);
-    const cancelled = () => stopped() || (state.nextAccessPolicy || state.accessPolicy)?.revision !== revision;
+    const samePolicy = () => (state.nextAccessPolicy || state.accessPolicy)?.revision === revision;
+    const repairAllowed = () => samePolicy() && !state.accessChangePending;
     const checkFailure = (error, beforeAdmission = false) => {
       // A late worker rejection belongs to its original turn, never a newer
       // stop, access revision or account/owner. Preserve their control state.
       const sameOwner = handle.deliveryOwner === owner && require('../device-auth-request').accountScopeKey(identity) === account;
-      if (cancelled() || !sameOwner) {
+      if (stopped() || !samePolicy() || !sameOwner) {
         // A confirmed permission change cancels this check after native work
         // has ended. Retire its synthetic activity without awaiting a later
         // status poll, while leaving newer owner/stop/pause controls untouched.
@@ -1723,7 +1724,9 @@ async function createRunnerHandle(request, defaults, initialSession) {
     invalidateObservation();
     let gate, preparationError;
     try {
-      gate = await pluginGeneration.begin({ handle, app, identity, cancelled,
+      // A live change may release a pending tool in this very turn. Keep
+      // the native result, but never start an implicit repair under a new policy.
+      gate = await pluginGeneration.begin({ handle, app, identity, cancelled: stopped, repairAllowed,
         selectedPluginIds: pluginTurn.requestedIds(options),
         // The gate compares content revisions against its pre-dispatch baseline.
         // Filesystem clocks can lag the conversation clock, so time filtering
@@ -1733,14 +1736,14 @@ async function createRunnerHandle(request, defaults, initialSession) {
         repair: prompt => continueTurn(prompt, [], { ...options, promptText: prompt, recordUser: false }, true),
         changed() {
           const phase = pluginGeneration.records(handle).find(row => ['checking', 'repairing'].includes(row.state))?.state;
-          if (phase && !cancelled()) {
+          if (phase && !stopped() && samePolicy()) {
             state.status = 'streaming';
             state.statusText = phase === 'repairing' ? '\u6b63\u5728\u4fee\u590d\u63d2\u4ef6\u8349\u7a3f\u2026' : '\u6b63\u5728\u68c0\u67e5\u63d2\u4ef6\u8349\u7a3f\u2026';
           }
           emit('changed');
         },
       });
-      if (gate.canStart()) await beginFileJournal('turn:' + state.alias + ':' + (state.turnSerial + 1) + ':' + Date.now().toString(36));
+      if (gate.canStart() && samePolicy()) await beginFileJournal('turn:' + state.alias + ':' + (state.turnSerial + 1) + ':' + Date.now().toString(36));
     } catch (error) {
       preparationError = error;
     } finally {
@@ -1757,7 +1760,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
         return { ...result, snapshot: _snapshot(state) };
       }
     }
-    if (!gate?.canStart()) {
+    if (!gate?.canStart() || !samePolicy()) {
       gate?.dispose();
       activeFileJournal = null;
       const result = state.goalPaused ? { ok: true, paused: true } : { ok: true, cancelled: true, manualStop: true };
@@ -1777,7 +1780,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       // their existing admission/recovery and queue semantics.
       try { result = await gate.finish(result); }
       catch (error) { return checkFailure(error); }
-      if (result?.failureKind === 'plugin-validation') {
+      if (['plugin-validation', 'plugin-repair'].includes(result?.failureKind)) {
         state.status = 'unreachable'; state.statusText = result.reason;
         state.completion = { reason: 'error', error: result.reason };
       } else if (result?.cancelled) {
@@ -1785,7 +1788,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
           state.status = 'aborted'; state.statusText = '\u5df2\u505c\u6b62';
           state.completion = { reason: 'cancelled' };
         }
-      } else if (result?.ok && !result.paused && !result.recovering && !cancelled()) {
+      } else if (result?.ok && !result.paused && !result.recovering && !stopped()) {
         // The validation gate may have run a repair in the same user turn.
         // Publish its final journal once, before admitting the next queued turn.
         await deliveryWorkspaces.freezeTurn(handle, outputChanges(), state.messages,

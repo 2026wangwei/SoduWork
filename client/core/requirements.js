@@ -87,11 +87,16 @@
     if (issue?.code === 'review_unassigned' && !restoredReview) return {text:'验收受阻', className:'is-stalled',
       guidance:deliveryGuidance.review_unassigned, reason:String(issue.reason || ''), blocked:true};
     if (phase === 'reviewing' || approval(task, context)?.action === 'review' || waitingOn(task, context).length) return null;
-    if (issue?.code) {
-      const pending = ['capture_pending', 'sync_pending'].includes(issue.code);
+    const pending = ['capture_pending', 'sync_pending'].includes(issue?.code);
+    const interrupted = ['failed', 'cancelled'].includes(turn.state) && !gate && !routing.reworkPending &&
+      (!turn.executor || turn.executor === 'native') && !executionActive(task);
+    if (issue?.code && !(interrupted && pending)) {
       return {text:pending ? '成果待同步' : '交付受阻', className:pending ? 'is-idle' : 'is-stalled',
-        guidance:deliveryGuidance[issue.code] || '', reason:String(issue.reason || ''), blocked:!pending};
+        guidance:deliveryGuidance[issue.code] || '', reason:String(issue.reason || ''), blocked:!pending, interrupted};
     }
+    if (interrupted) return {text:turn.state === 'cancelled' ? '已停止' : '执行失败', className:'is-stalled',
+      guidance:turn.state === 'cancelled' ? '本轮执行已停止，可在最近聊天中查看原会话。'
+        : '本轮执行未完成，请在最近聊天中查看原会话了解详细原因。', blocked:true, interrupted:true};
     if (turn.state !== 'completed') return null;
     return {text:routing.executionSubmissionMode === 'manual' ? '待提交验收' : '交付待处理',
       className:'is-idle', reason:'', blocked:false};

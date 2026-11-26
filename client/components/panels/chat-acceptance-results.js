@@ -116,8 +116,39 @@
     }
 
     const timestamp = value => Number(value) || Date.parse(value || '') || 0;
-    function nativeReviewTurn(entry, at, messages) {
-      if (!at || !ctx._sessionId) return null;
+    // Undefined permits legacy message matching; null means the available
+    // version or attachment evidence rules out guessing a turn.
+    function lockedDeliveryTurn(entry, approval) {
+      const artifact = approval.confirmation?.lockedArtifact;
+      if (!artifact) return undefined;
+      const conflicts = (left, right) => left && right && left !== right;
+      if (conflicts(artifact.id, approval.artifactVersionId) || conflicts(artifact.taskId, entry.taskId) ||
+          conflicts(approval.taskId, entry.taskId)) return null;
+      const ref = 'conversation:' + ctx._sessionId;
+      if (artifact.sourceRef && artifact.sourceRef !== ref) return null;
+      const primary = artifact.manifest?.primary;
+      if (!Array.isArray(primary) || !primary.length) return undefined;
+      // Frozen attachment IDs distinguish two versions of the same filename, even
+      // when the Hub stored both approval timestamps at whole-second precision.
+      const attachments = new Map((entry.trace.attachments || []).map(file => [file.id, file]));
+      const identifiedVersion = Boolean(artifact.id && approval.artifactVersionId && artifact.taskId);
+      let turnId, complete = identifiedVersion;
+      for (const file of primary) {
+        const attachment = attachments.get(file?.id), meta = attachment?.evidenceMeta;
+        if (conflicts(file?.sourceRef, ref) || conflicts(attachment?.taskId, entry.taskId) ||
+            conflicts(attachment?.sourceRef, ref) || conflicts(attachment?.role, 'output') ||
+            conflicts(meta?.conversationId, ctx._sessionId) || conflicts(meta?.identifier, turnId)) return null;
+        // An exact file reference missing from this page must wait for hydration.
+        // Old Hub projections without provenance can still use their imported message keys.
+        if (identifiedVersion && file?.id && file.sourceRef === ref && !attachment) return null;
+        if (!file?.id || !file.sourceRef || !attachment?.taskId || !attachment.sourceRef ||
+            !attachment.role || !meta?.conversationId || !meta.identifier) complete = false;
+        if (meta?.identifier) turnId = meta.identifier;
+      }
+      return complete ? turnId : undefined;
+    }
+    function nativeReviewTurn(entry, at, messages, lockedTurn) {
+      if (lockedTurn === null || !ctx._sessionId || !at && !lockedTurn) return null;
       const turns = new Map();
       for (const event of entry.trace.timeline || []) {
         const detail = event.detail || {}, time = timestamp(event.at);
@@ -130,9 +161,14 @@
       }
       // Compare Hub timestamps only. A late state update cannot make an older
       // turn own a newer gate; equal starts for distinct turns are ambiguous.
-      const candidates = [...turns.values()].filter(turn => turn.at <= at).sort((a, b) => b.at - a.at);
-      const turn = candidates[0];
-      if (!turn || turn.at === candidates[1]?.at || turn.failed || turn.executor !== 'native' ||
+      let turn;
+      if (lockedTurn) turn = turns.get(JSON.stringify([ctx._sessionId, lockedTurn]));
+      else {
+        const candidates = [...turns.values()].filter(turn => turn.at <= at).sort((a, b) => b.at - a.at);
+        if (candidates[0]?.at === candidates[1]?.at) return null;
+        turn = candidates[0];
+      }
+      if (!turn || turn.failed || turn.executor !== 'native' ||
           turn.conversationId !== ctx._sessionId) return null;
       const users = messages.flatMap((message, index) => message.role === 'user' &&
         message.submissionId === turn.turnId ? [index] : []);
@@ -209,7 +245,9 @@
             entry.task?.executionContext?.assigneeUserId || (direct ? entry.task?.createdBy : '') || '').trim();
           const samePerson = Boolean(me && reviewer && executor && me === reviewer && me === executor);
           const approvalAt = timestamp(approval?.createdAt) || timestamp(approval?.gate?.createdAt);
-          const native = samePerson && approval?.action === 'review' ? nativeReviewTurn(entry, approvalAt, messages) : null;
+          const selfReview = samePerson && approval?.action === 'review';
+          const lockedTurn = selfReview && ctx._sessionId ? lockedDeliveryTurn(entry, approval) : undefined;
+          const native = selfReview ? nativeReviewTurn(entry, approvalAt, messages, lockedTurn) : null;
           let anchor = approvalAnchors.get(key);
           if (!anchor) {
             // Approval creation is immutable; resolution and task updates must not move its slot.
@@ -225,7 +263,7 @@
           const matched = anchor.messageKey ? messages.findIndex(message => message.taskOutputKey === anchor.messageKey) : -1;
           let index = matched >= 0 ? matched + 1 : messages.findIndex((_, at) => owner(at) > anchor.after);
           if (index < 0) index = messages.length;
-          if (samePerson && approval?.action === 'review') {
+          if (selfReview) {
             let outputIndex = -1;
             if (native) {
               const last = messages[native.until - 1];
@@ -241,7 +279,7 @@
                   block.kind === 'toolcall' || String(block.text || '').trim()));
               const output = messages[candidate];
               if (completedReply(output) && (!output.taskId || String(output.taskId) === taskId)) outputIndex = candidate;
-            } else if (outputIndices.length) {
+            } else if (lockedTurn === undefined && outputIndices.length) {
               // Imported task streams already carry their source identity.
               // Restrict correction to this user turn so an older output cannot
               // pin a rework review above its own answer or move it to a later turn.
