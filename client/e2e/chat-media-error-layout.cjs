@@ -185,7 +185,7 @@ if (typeof electron === 'string') {
     assert.deepEqual(await run(`Array.from(list.querySelectorAll('.noutput-gallery [data-open-app]'), node => node.dataset.openApp)`), ['final']);
     assert.equal(await run('list.querySelector(".noutput-gallery [role=status]").textContent'), '图片暂时无法预览 · absent/index.html');
     await run(`paintHistory(historyFiles, ['shots/menu.png', '../shots/fight.png']); void 0;`);
-    assert.equal(await run('Boolean(list.querySelector("pre code")) && !list.querySelector("img")'), true);
+    assert.equal(await run('!list.textContent.includes("../shots") && !list.querySelector("img")'), true);
     report.cases.push({ historyGallery: 'two decoded screenshots, two unavailable entries, one message output and one session output' });
     async function deliveryGroups(messages, files, history = {}, historyRecovery) {
       return run(`(() => {
