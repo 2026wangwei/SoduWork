@@ -502,7 +502,7 @@
     if (!LEGACY && decorateMemo && decorateMemo.ref === String(ref || '') && decorateMemo.html === html &&
         decorateMemo.filesSig === filesSig && decorateMemo.stateSig === stateSig && decorateMemo.carrySig === carrySig)
       return decorateMemo.decorated;
-    const historyMedia = snapshot.localReplica === true && html.includes('<pre>');
+    const historyMedia = snapshot.localReplica === true && (html.includes('<pre>') || html.includes('data-local-media-declaration'));
     if (!files.length && !historyMedia && !snapshot?.artifactUrl && !snapshot?.cloudHandoff?.artifactUrl && !snapshot?.execution?.artifactUrl && !carrySig) return html;
     const root = document.createElement('div'); root.innerHTML = html;
     const hasVersions = files.some(file => file.versionId);
@@ -687,9 +687,10 @@
     return card;
   }
   function localImageDeclaration(code) {
-    if (code.className && !code.classList.contains('language-soduwork-media') &&
+    const explicit = code.hasAttribute('data-local-media-declaration');
+    if (!explicit && code.className && !code.classList.contains('language-soduwork-media') &&
         !code.classList.contains('language-json')) return null;
-    const source = code.textContent.trim();
+    const source = (explicit ? code.dataset.localMediaDeclaration : code.textContent).trim();
     if (!source.startsWith('{') || source.length > 16384) return null;
     let value;
     try { value = JSON.parse(source); } catch (_) { return null; }
@@ -699,10 +700,12 @@
     const paths = [];
     for (const item of value.items) {
       const url = item?.url;
-      if (typeof url !== 'string' || !url || /[:\\?#\u0000-\u001f]/.test(url) ||
-          Object.keys(item).some(name => !['url', 'title'].includes(name))) return null;
-      const relative = url.replace(/^\.\//, '');
-      if (relative.split('/').some(part => !part || part === '.' || part === '..')) return null;
+      if (typeof url !== 'string' || !url || Object.keys(item).some(name => !['url', 'title'].includes(name))) return null;
+      const drive = explicit && /^[a-z]:[\\/]/i.test(url);
+      const relative = drive ? url.replace(/\\/g, '/') : url.replace(/^\.\//, '');
+      const segments = drive ? relative.slice(3) : explicit && relative.startsWith('/') ? relative.slice(1) : relative;
+      if (/[:\\?#\u0000-\u001f]/.test(segments)) return null;
+      if (segments.split('/').some(part => !part || part === '.' || part === '..')) return null;
       paths.push(relative);
     }
     return { type: value.type, paths };
@@ -726,12 +729,15 @@
       const target = owners.get(task);
       const candidates = new Map(), available = scoped(message,files);
       if (target === message || historyMedia) {
-        message.querySelectorAll('.nmd pre > code').forEach(code => {
+        message.querySelectorAll('.nmd pre > code, .nmd [data-local-media-declaration]').forEach(code => {
           const declaration = localImageDeclaration(code);
           if (!declaration) return;
           // A basename is not proof that a screenshot belongs to this gallery.
           const entries = declaration.paths.map(relative => {
             const images = available.filter(file => file.artifactId && !file.deleted && isImage(file));
+            if (/^(?:[a-z]:)?\//i.test(relative)) {
+              return workspaceFileTarget(relative, images);
+            }
             const originals = images.filter(file => !file.previewOf && file.relative === relative);
             const captured = originals.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn);
             if (captured.length) return captured.length === 1 ? captured[0] : null;
@@ -770,11 +776,13 @@
               const missing = doc.createElement('span');
               missing.className = 'noutput-image-missing'; missing.setAttribute('role', 'status');
               const label = historyImagesLoading ? '正在读取图片…' : '图片暂时无法预览';
-              missing.textContent = (global.SoduWorkI18n?.translateText?.(label) || label) + ' · ' + declaration.paths[i];
+              const path = declaration.paths[i];
+              const name = /^(?:[a-z]:)?\//i.test(path) ? path.split('/').pop() : path;
+              missing.textContent = (global.SoduWorkI18n?.translateText?.(label) || label) + ' · ' + name;
               group.append(missing);
             }
           });
-          code.parentElement.replaceWith(group);
+          (code.hasAttribute('data-local-media-declaration') ? code : code.parentElement).replaceWith(group);
         });
       }
       message.querySelectorAll('[data-output-image-ref]').forEach(node => {

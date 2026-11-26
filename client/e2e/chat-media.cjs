@@ -134,12 +134,12 @@ if (typeof electron === 'string') {
       await run('document.body.removeAttribute("style");void 0;');
       await run('list.style.width="600px";void 0;');
     });
-    await check('separate groups and signed URLs remain ordered; invalid media falls back to readable code', async () => {
+    await check('separate groups and signed URLs remain ordered; invalid declarations show a status without exposing protocol text', async () => {
       await show(block('gallery', [image('wide?signature=1'), image('wide?signature=2')]) + '\n\nOther group\n\n' + block('image', [image('tall')]));
       assert.equal(await run('list.querySelectorAll(".nmedia-group").length'), 2);
       await show(block('image', [{ url: 'javascript:alert(1)' }]));
       assert.equal(await run('list.querySelectorAll(".nmedia-group").length'), 0);
-      assert(await run('list.textContent.includes("javascript:")'));
+      assert(await run('!list.textContent.includes("javascript:") && !!list.querySelector("[role=status]")'));
     });
     await check('sidebar inline media and extra JSON escaping render while surrounding prose and ordinary code stay intact', async () => {
       const payload = JSON.stringify({ type: 'video', items: [image('video?sidebar=1')] });
@@ -190,6 +190,22 @@ if (typeof electron === 'string') {
         assert(Math.abs(size.w - size.frameW) < 1 && Math.abs(size.h - size.frameH) < 1, JSON.stringify(size));
         assert.equal(size.bg, 'rgba(0, 0, 0, 0)');
       }
+    });
+    await check('local declarations resolve by exact artifact path and keep unmatched paths out of prose', async () => {
+      const local = '/Users/example/Library/Application Support/fixture/shot.png';
+      const payload = JSON.stringify({ type: 'image', items: [{ url: local }] });
+      for (const source of [block('image', [{ url: local }]), 'soduwork-media\n\n\x60\x60\x60json\n' + payload + '\n\x60\x60\x60']) {
+        await show('Before\n\n' + source + '\n\nAfter');
+        assert(await run('list.textContent.includes("Before") && list.textContent.includes("After")'));
+        assert.equal(await run('/soduwork-media|items|Application Support/.test(list.textContent)'), false);
+        const decorate = path => run('ChatOutputLinks.decorate(list.innerHTML,' + JSON.stringify([
+          { artifactId: 'shot', name: 'shot.png', relative: 'shot.png', path, primary: false }
+        ]) + ',"local-path")');
+        assert(!(await decorate('/other/shot.png')).includes('data-output-image="shot"'));
+        assert((await decorate(local)).includes('data-output-image="shot"'));
+      }
+      await show('\x60\x60\x60json\n' + payload + '\n\x60\x60\x60');
+      assert(await run('list.querySelector("pre code").textContent.includes("Application Support")'));
     });
     await check('trusted local image outputs now load inline using the existing preview API', async () => {
       await run(`window.files=[{artifactId:'local-image',name:'result.png',relative:'result.png',changedInTurn:true,primary:true}];

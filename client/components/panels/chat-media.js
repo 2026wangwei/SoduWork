@@ -46,12 +46,29 @@
     const root = new DOMParser().parseFromString(html, 'text/html').body;
     root.querySelectorAll('code').forEach(code => {
       const fenced = code.parentElement.tagName === 'PRE';
-      if (fenced && !code.classList.contains('language-soduwork-media')) return;
+      const pre = fenced && code.parentElement;
+      const label = pre && pre.previousElementSibling;
+      const split = label && label.matches('p,h1,h2,h3,h4,h5,h6') &&
+        label.textContent.trim() === 'soduwork-media' &&
+        (!code.className || code.classList.contains('language-json'));
+      if (fenced && !split && !code.classList.contains('language-soduwork-media')) return;
       const inline = !fenced && code.textContent.match(/^soduwork-media\s+([\s\S]+)$/);
       if (!fenced && !inline) return;
       // JSON only: never execute markup, scripts or model-provided styles.
-      const data = declaration(fenced ? code.textContent : inline[1]);
-      if (!data) return;
+      if (split) label.remove();
+      const source = fenced ? code.textContent : inline[1];
+      const data = declaration(source);
+      if (!data) {
+        const notice = document.createElement('span');
+        notice.className = 'noutput-image-missing';
+        notice.setAttribute('role', 'status');
+        notice.textContent = tr('媒体加载失败');
+        // Local files can only be opened by the authorized artifact index.
+        // Keep the lookup input out of visible text while the index is loading.
+        if (source.length <= 16384) notice.dataset.localMediaDeclaration = source;
+        (pre || code).replaceWith(notice);
+        return;
+      }
       const group = document.createElement('div'); group.className = 'nmedia-group';
       if (data.type === 'gallery' && data.items.length > 1) group.classList.add('nmedia-grid');
       group.dataset.chatMedia = JSON.stringify([String(scope || ''), data]);
