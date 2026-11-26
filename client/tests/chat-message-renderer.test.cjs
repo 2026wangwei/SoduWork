@@ -757,8 +757,7 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   toolScope.window = toolScope;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../components/panels/panels-chat-tools.js'), 'utf8'), toolScope);
   const tools = toolScope.ChatTools;
-  Object.assign(sandbox.ChatTools, { kind: tools.kind, isCommandTool: tools.isCommandTool,
-    render: tools.render, recordOwner: tools.recordOwner });
+  Object.assign(sandbox.ChatTools, { kind: tools.kind, isCommandTool: tools.isCommandTool, render: tools.render });
   let renders = 0;
   sandbox.ChatTools.appendTimeline = (parts, input, _previous, _anchor, _narrated, itemHtml) => {
     renders++; parts.push(...input.map(itemHtml));
@@ -771,7 +770,7 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   ctx._pending = ''; ctx._sessionOptions = {}; ctx._snap.tools = [command];
   renderer._render();
   assert.match(list.innerHTML, fileRead ? /data-tool-side="1"/ : /正在运行命令/);
-  if (!fileRead) assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"|data-command-record/);
+  if (!fileRead) assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"/);
   const before = renders;
   ctx._snap.usage = { input: 10, output: 20 };
   renderer._render();
@@ -779,11 +778,7 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   command.state = 'done'; renderer._render();
   assert.ok(renders > before, 'the completed title must still update at settlement');
   if (fileRead) assert.match(list.innerHTML, /读取/);
-  else {
-    assert.match(list.innerHTML, /运行了命令/);
-    assert.match(list.innerHTML, /data-command-record="live-command"/);
-    assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"/);
-  }
+  else { assert.match(list.innerHTML, /运行了命令/); assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"/); }
 });
 
 

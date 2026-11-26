@@ -112,28 +112,6 @@
     global.ChatDomPatch.patchHtml(status, html);
     node.setAttribute('aria-busy', String(html === loadingHtml));
   }
-  function openRecord(ctx, id, button) {
-    const tool = current(ctx, id), node = nodeOf(ctx, id);
-    if (!tool || !node?.contains(button) || button.dataset.commandOwner !== scopeOf(ctx) ||
-        !global.ChatTools.render(tool)?.recordAvailable) return false;
-    const state = stateFor(ctx), selection = ++state.selection;
-    const show = full => {
-      // Check the full receipt too: a compact projection can omit bridge arguments.
-      const shown = full && global.ChatTools.render(full)?.recordAvailable && global.ChatWorkbench?.openCommandRecord(full);
-      sideStatus(node, shown ? '' : '<div class="nd-skip" role="status">详情暂时无法读取</div>');
-    };
-    if (!tool.detailsDeferred) { show(tool); return true; }
-    sideStatus(node, loadingHtml, selection);
-    void load(ctx, tool, false).then(entry => {
-      if (!live(ctx, state, tool) || selection !== state.selection || !node.isConnected || !node.contains(button) ||
-          !global.ChatTools.render(current(ctx, id))?.recordAvailable) {
-        if (node.querySelector('[data-tool-detail-status]')?.dataset.detailSelection === String(selection)) sideStatus(node, '');
-        return;
-      }
-      show(entry.tool);
-    });
-    return true;
-  }
   function activate(ctx, id, retry = false) {
     const tool = current(ctx, id);
     if (!tool || !global.ChatTools) return false;
@@ -226,5 +204,5 @@
     const listener = listeners.get(ctx);
     listener?.root.removeEventListener('click', listener.cancel, true); listeners.delete(ctx);
   }
-  global.ChatToolDetails = Object.freeze({ bodyHtml, activate, openRecord, openSkillFailure, reset });
+  global.ChatToolDetails = Object.freeze({ bodyHtml, activate, openSkillFailure, reset });
 })(typeof window !== 'undefined' ? window : globalThis);
