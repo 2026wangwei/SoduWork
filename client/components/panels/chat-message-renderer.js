@@ -20,7 +20,7 @@
     for (const node of root.querySelectorAll('[' + attribute + ']')) { if (node.getAttribute(attribute) === String(value)) return node; }
     return null;
   });
-  let lastList = null, lastMessageCount = 0;
+  let lastList = null, lastMessageCount = 0, lastHistoryStart = 0;
   let outputScope = '';
   let liveStreamShape = null;
   let approvalMarkup = '';
@@ -468,12 +468,14 @@
     const allMessages = Array.isArray(ctx._snap.messages) ? ctx._snap.messages : [];
     // Keep the reader's older page mounted while new messages arrive below it.
     // Never shrink an explicitly widened window; cap automatic growth only.
-    if (lastList === list && !stick && allMessages.length > lastMessageCount) {
+    const historyStart = Number(ctx._snap.history?.messageStart) || 0;
+    if (lastList === list && !stick && historyStart >= lastHistoryStart && allMessages.length > lastMessageCount) {
       ctx._messageWindowSize = growMessageWindow(ctx._messageWindowSize, allMessages.length - lastMessageCount);
     }
-    lastList = list; lastMessageCount = allMessages.length;
+    lastList = list; lastMessageCount = allMessages.length; lastHistoryStart = historyStart;
     const windowSize = Math.max(80, Number(ctx._messageWindowSize) || 80);
     const messageStart = Math.max(0, allMessages.length - windowSize);
+    ctx._alignEarlier?.(ctx._snap, ctx._snap.history?.messageIndices?.[messageStart] ?? historyStart + messageStart);
     const visibleMessages = allMessages.slice(messageStart).map((message, offset) => ({
       message, index: messageStart + offset,
     }));
@@ -533,10 +535,7 @@
     streamMarkup = new WeakMap(); // The full renderer may replace cached node contents.
     const history = ctx._snap.history || {};
     if (messageStart > 0 || toolStart > 0 || history.truncated) {
-      const olderCount = Number(history.messageStart || messageStart || 0);
-      const hint = olderCount > 0 ? olderCount + ' 条更早消息' : '更多历史记录';
-      parts.push('<div data-chat-node="history-older" class="nchat-history-older">' +
-        '<button type="button" data-load-older>加载更早记录（' + hint + '）</button></div>');
+      parts.push('<span hidden data-chat-node="history-older" data-load-older></span>');
     }
     const goalMode = ctx._sessionOptions.intent === 'goal' || ctx._sessionOptions.mode === 'goal';
     const snapshotTools = (ctx._snap && ctx._snap.tools) || [];

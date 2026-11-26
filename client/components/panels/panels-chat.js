@@ -58,8 +58,11 @@
     get _cancelQueued() { return _cancelQueued; },
     get _proposalAction() { return _proposalAction; },
     get _sendCore() { return _sendCore; },
-    get _loadingOlder() { return _loadingOlder; }, set _loadingOlder(value) { _loadingOlder = value; },
+    get rich() { return rich; },
+    get _alignEarlier() { return _readingPosition?.alignEarlier; },
     get _openEarlierPage() { return _readingPosition?.openEarlier; },
+    get _earliestLiveIndex() { return _readingPosition?.earliestLiveIndex(); },
+    get _messageFooter() { return _messageFooter; },
     get _finalReplyIndexes() { return _finalReplyIndexes; },
     get _restoreRetryDraft() { return _restoreRetryDraft; },
     get _speech() { return _speech; }, set _speech(value) { _speech = value; },
@@ -166,7 +169,7 @@
   const { _ensureOnce, _ensure, _retryOpenChat, _awaitBounded, _send, _sendCore, _paintOpening } = global.ChatSessionController.create(context);
   const { _bind, _mount, _loadChatSkills, _openPluginBuilder, _toggleChatMic } = global.ChatComposerBindings.create(context);
   const { _collabState, _ensureCollabView, _collabAction, _openTaskPicker, _selectCollabTask, _loadCollabTask, _clearFinishedAcceptanceContext, _loadCollabRun, _scheduleCollabPoll, _taskSnapshotIsStale, _isEmptyStalledSnapshot, _collabTerminal, _collabRunning, _collabStatus, _collabEntryStatus, _collabEntries, _collabQueueMode, _collabProjectId, _setCollabEntryStatus, _nextCollabEntry, _persistTaskBinding, _bindCollaborationTask, _restoreCollaboration, _openTask, _renderTaskStartPrompt, _startTask, _startTaskCommand, enqueueTask } = global.ChatTaskController.create(context);
-  const { reset: _resetMessageRenderer, _finalReplyIndexes, rich, _richPlain, CARET, _ensureHlCss, _inject, _blockHtml, _MCP_SAY, _friendlyTool, _toolHtml, _render, _ctxText, _tokenText, _ctxHtml, _uiHtml } = global.ChatMessageRenderer.create(context);
+  const { reset: _resetMessageRenderer, _messageFooter, _finalReplyIndexes, rich, _richPlain, CARET, _ensureHlCss, _inject, _blockHtml, _MCP_SAY, _friendlyTool, _toolHtml, _render, _ctxText, _tokenText, _ctxHtml, _uiHtml } = global.ChatMessageRenderer.create(context);
   const { _queueRows, _renderQueue, _queueAction, _updateQueueOrder, _cancelQueued } = global.ChatSendQueue.create(context);
   const { _chatDraftBridge, _workModel, _workConversationContext, _openPluginDebug, _openWorkAction, _pickProposal, _maybeProposal, _renderProposal, _dismissProposal, _proposalAction } = global.ChatWorkIntent.create(context);
   const { firstSendEditState, restoreFirstSendForEdit, _hasConversationDraft, _withConversationDraftRestore, _draftKeyForCurrentSession, _draftOwnerScope, _clearConversationDraftScope, _flushConversationDrafts, _rememberConversationText, _rememberConversationDraft, _conversationDraftText, _conversationDraftSkills, _clearConversationDraft, _moveConversationDraft, _restoreConversationDraft, _retainFailedConversationDraft, _restoreRetainedConversationFailure, _restoreRetryDraft, _openPluginAuthRecovery, _restoreFailedDraft } = global.ChatDraftRecovery.create(context);
@@ -175,7 +178,6 @@
   let _off = null;          // Event unsubscribe function.
   let _snap = null;         // Latest snapshot.
   let _renderFrame = 0;
-  let _loadingOlder = false;
   let _busy = false;        // Session initialization is in progress.
   let _goalActionPending = '';
   let _viewEpoch = 0;         // Invalidate pending open operations when switching conversations.
@@ -883,7 +885,6 @@
     // Control teardown must not overwrite the saved draft with an empty attachment tray.
     _withConversationDraftRestore(() => {
     _cancelScheduledRender();
-    _loadingOlder = false;
     _viewEpoch += 1;
     clearTimeout(_collabPollTimer); _collabPollTimer = null;
     _stopSlowStatusTicker();
