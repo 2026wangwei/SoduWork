@@ -137,6 +137,9 @@ test('current-turn receipts distinguish a preview from a replacement illustratio
   const requested = await turn('third', '单独交付网页截图文件', '[截图](screenshot.png)', 'screenshot.png', 'requested screenshot');
   assert.equal(requested.processEvidence, false);
   assert.equal(requested.primary, true);
+  const linked = await turn('fourth', '制作新版封面', '[封面](cover.png)', 'cover.png', 'linked replacement');
+  assert.equal(linked.processEvidence, false);
+  assert.equal(linked.primary, true, 'the verified replacement remains a delivery without a fresh manifest');
 });
 
 test('old Pi scratch allocations recover shell-generated files only with the original local ref and terminal archive window', async t => {
