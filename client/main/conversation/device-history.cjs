@@ -492,22 +492,30 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     const receipts = data?.localArtifactHistory;
     const localReceipts = receipts?.items?.length && !row.deviceTransferId &&
       [...receipts.items, ...(receipts.resources || [])].every(item => item.source?.sessionId === row.id);
-    if ((data?.coverage?.complete || localReceipts) && archive.needsBackup(receipts) && !data.imported && !data.historyProtection &&
+    if (data?.digest && (data.coverage?.complete || localReceipts) && archive.needsBackup(receipts) && !data.imported && !data.historyProtection &&
         allowsArtifacts(check.evidence()) && await canBackfill(row, receipts)) {
-      const { digest: oldDigest, savedAt, nativeReadError, ...stored } = data;
-      const prior = data.localArtifactHistory;
-      const updated = await archive.preserve(app.getPath('userData'), row.id, prior, prior, check, { pinLegacyDeliveries: true })
-        .catch(error => { if (error.historyAccessFailure) throw error; return null; });
+      // A partial native read can temporarily change the displayed messages and
+      // coverage. Attach the backup to the committed body that owns its receipts.
+      const committed = await store.deviceHistory(row.id);
       check();
+      if (committed?.digest !== data.digest) throw Object.assign(Error('历史记录已变化，请重新读取'), { code: 'HISTORY_CONCURRENT_UPDATE' });
+      const { digest: oldDigest, savedAt, ...body } = committed;
+      const prior = body.localArtifactHistory, profile = app.getPath('userData');
+      const updated = await archive.preserve(profile, row.id, prior, prior, check, { pinLegacyDeliveries: true })
+        .catch(error => { if (error.historyAccessFailure) throw error; return null; });
       if (updated) {
-        stored.localArtifactHistory = updated;
-        const result = await store.saveDeviceHistory(row.id, stored, { expectedRevision: row.replicaRevision,
-          expectedTransferId: row.deviceTransferId || '', expectedHistoryDigest: oldDigest });
-        await archive.retire(app.getPath('userData'), row.id, prior.archive, updated.archive, result.ok).catch(() => {});
-        check();
+        let result;
+        try {
+          check();
+          result = await store.saveDeviceHistory(row.id, { ...body, localArtifactHistory: updated }, { expectedRevision: row.replicaRevision,
+            expectedTransferId: row.deviceTransferId || '', expectedHistoryDigest: oldDigest });
+        } finally {
+          await archive.retire(profile, row.id, prior.archive, updated.archive, !!result?.ok).catch(() => {});
+        }
         if (!result.ok) throw Object.assign(Error('历史记录已变化，请重新读取'), { code: 'HISTORY_CONCURRENT_UPDATE' });
-        data = { ...stored, digest: result.digest, savedAt, nativeReadError };
+        data = { ...data, localArtifactHistory: updated, digest: result.digest };
       }
+      check();
     }
     if (onlyUpgrade) {
       if (data?.digest && !archive.needsBackup(data.localArtifactHistory)) await store.markArchiveReviewed(row.id, data.digest);

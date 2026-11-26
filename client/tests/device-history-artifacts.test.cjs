@@ -732,7 +732,7 @@ test('four retained sparse 128 MiB files reserve the byte budget ahead of a new 
   assert.equal(offline.archive.omitted, 2);
 });
 
-test('partial legacy conversation text does not hide a locally verified single-file delivery', async t => {
+async function legacyReportHistory(t, complete) {
   let history;
   const f = fixture(t, () => history?.close()), app = { getPath: () => f.workRoot };
   const identity = require('./helpers/platform-session-fixture.cjs').identity();
@@ -749,9 +749,15 @@ test('partial legacy conversation text does not hide a locally verified single-f
       findBySessionId: () => null }, store: require('../main/conversation/replica-store.cjs')
       .createWorker(path.join(f.workRoot, 'conversation-replicas', 'history.sqlite')) });
   const [entry] = await history.register([row]);
+  const snapshot = { messages: [{ role: 'assistant', text: 'guide.html' }], tools: [] };
   await history.store.saveDeviceHistory(row.id, { localArtifactHistory: receipts,
-    snapshot: { messages: [{ role: 'assistant', text: 'guide.html' }], tools: [] }, coverage: { complete: false, sources: [] } },
+    snapshot, coverage: { complete, sources: [] } },
   { expectedRevision: entry.replicaRevision });
+  return { f, history, row, name, html, snapshot };
+}
+
+test('partial legacy conversation text does not hide a locally verified single-file delivery', async t => {
+  const { f, history, row, name, html } = await legacyReportHistory(t, false);
   const view = await history.open(row.id, { historyPreview: true });
   const index = await runtime.viewSnapshotAsync(view);
   const pinned = index.items.filter(item => item.versionId);
@@ -761,6 +767,44 @@ test('partial legacy conversation text does not hide a locally verified single-f
   const original = await require('../main/conversation/delivery-package-worker').prepare(view, [pinned[0].artifactId]);
   assert.equal(original.bytes.toString(), html);
   await view.close();
+});
+
+test('backfilling a file on a partial native read preserves the complete committed transcript', async t => {
+  const { history, row, snapshot } = await legacyReportHistory(t, true);
+  const messages = [...snapshot.messages, { role: 'assistant', text: 'partial native addition' }];
+  t.mock.method(native, 'read', async () => { throw Object.assign(Error('native segment unavailable'), {
+    code: 'NATIVE_SEGMENT_UNAVAILABLE', history: { snapshot: { ...snapshot, messages }, coverage: { complete: false, sources: [] } },
+  }); });
+  const view = await history.open(row.id, { historyPreview: true, allowContinuation: true });
+  try {
+    assert.equal(view.snapshot().execution.canContinueOnDevice, false);
+    assert.deepEqual(view.snapshot().messages.map(message => message.text), messages.map(message => message.text));
+    const saved = await history.store.deviceHistory(row.id);
+    assert.ok(saved.localArtifactHistory.archive?.files.length);
+    assert.deepEqual(saved.snapshot, snapshot);
+    assert.deepEqual(saved.coverage, { complete: true, sources: [] });
+    assert.equal(saved.nativeReadError, undefined);
+  } finally { await view.close(); }
+});
+
+test('a rejected backfill retires its unpublished files without overwriting the existing body', async t => {
+  const { f, history, row } = await legacyReportHistory(t, false);
+  const stored = await history.store.deviceHistory(row.id);
+  const archive = require('../main/conversation/device-artifact-archive.cjs');
+  let generation, failWrite = true;
+  t.mock.method(history.store, 'saveDeviceHistory', async (id, body, expected) => {
+    assert.equal(expected.expectedHistoryDigest, stored.digest);
+    generation = archive.location(f.workRoot, id, body.localArtifactHistory.archive);
+    assert.ok(fs.existsSync(generation));
+    if (failWrite) throw Error('SQLite write failed');
+    return { ok: false, stale: true };
+  });
+  for (const failure of [/SQLite write failed/, { code: 'HISTORY_CONCURRENT_UPDATE' }]) {
+    await assert.rejects(history.open(row.id, { historyPreview: true }), failure);
+    assert.equal(fs.existsSync(generation), false);
+    assert.deepEqual(await history.store.deviceHistory(row.id), stored);
+    failWrite = false;
+  }
 });
 
 test('a partial legacy archive can finish after restart when the original receipt becomes readable again', async t => {
