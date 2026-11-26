@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     # Task attachment storage: MinIO or S3-compatible storage.
     # Use MinIO when minio_endpoint is set; otherwise use ignored local uploads/ storage for development.
     # Keep AK/SK credentials in .env, outside the database and repository.
+    artifact_staging_dir: str = ""
     minio_endpoint: str = ""          # For example, minio.example.com, without a URL scheme.
     minio_access_key: str = ""
     minio_secret_key: str = ""

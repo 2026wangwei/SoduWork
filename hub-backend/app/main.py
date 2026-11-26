@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     # WebSocket query credentials can never reach the formatted access log.
     install_log_redaction()
     settings.validate_security()  # Reject missing or default credentials outside development.
+    if settings.minio_endpoint or settings.artifact_staging_dir:
+        from .services import artifact_staging
+        artifact_staging.validate_directory()
     await init_db()
     if settings.jiyong_database_url:
         from .services import jiyong_cloud_database

@@ -719,7 +719,7 @@ async def dispatch_inputs(session, row, extra):
     return [(ARCHIVE_NAME, data, "application/zip")], extra
 
 
-async def commit(session, client, transfer_id, sha256):
+async def commit(session, client, transfer_id, sha256, *, accepted_only=False):
     row = await get(session, client, transfer_id)
     if row.sha256 != sha256:
         raise HTTPException(409, "交接文件摘要不一致")
@@ -736,11 +736,32 @@ async def commit(session, client, transfer_id, sha256):
         # Recovery may release this fence only after an exact admission probe.
         if latest and latest.kind in {ai_exec.EV_DISPATCH_STARTED, ai_exec.EV_DISPATCH_UNCERTAIN}:
             return public(row)
+    if accepted_only and not row.submitted_at:
+        return public(row)
     # Configuration/readiness failure is unambiguously before any dispatch.
     picked = await destination(session, client, row.options, row.source)
+    submitted = row.submitted_at
+    resolved = picked.get("managedModelSelection")
     try:
-        check_prepared_model(row.options, picked.get("managedModelSelection"))
+        check_prepared_model(row.options, resolved)
     except ValueError as exc:
+        if row.phase == "prepared" and (row.source or {}).get("entryKind") == "cloud":
+            # Nothing has claimed the dispatch. Pin the new selection for the
+            # next explicit confirmation and remove this request from recovery.
+            options = dict(row.options)
+            if resolved is None:
+                options.pop("managedModelSelection", None)
+            else:
+                options["managedModelSelection"] = resolved
+            message = "执行模型配置版本已变化，本次未启动。请确认后重试，或撤销请求。"
+            changed = await session.execute(update(Handoff).where(
+                Handoff.id == row.id, Handoff.phase == "prepared", Handoff.submitted_at == submitted,
+            ).values(options=options, submitted_at=None, error=message, retry_after=None, recovery_attempts=0))
+            if changed.rowcount:
+                from .cloud_sync_notifications import mark
+                mark(session, row.task_id, owner=row.owner_user_id)
+            await session.commit()
+            raise HTTPException(409, message) from exc
         raise HTTPException(409, str(exc)) from exc
     now = datetime.now(timezone.utc)
     conditions = [Handoff.phase == "prepared"]
@@ -749,7 +770,7 @@ async def commit(session, client, transfer_id, sha256):
                       (Handoff.commit_started_at < now - timedelta(minutes=2))]
     from sqlalchemy import or_
     changed = await session.execute(update(Handoff).where(
-        Handoff.id == row.id, or_(*conditions)).values(phase="committing", commit_started_at=now, error="",
+        Handoff.id == row.id, Handoff.submitted_at == submitted, or_(*conditions)).values(phase="committing", commit_started_at=now, error="",
         submitted_at=row.submitted_at or now,
         receipt={"runnerBootId": picked.get("runnerBootId", ""), "runnerId": picked["runnerId"]}))
     if changed.rowcount:

@@ -43,6 +43,30 @@ class TaskAttachmentQuotaTests(unittest.IsolatedAsyncioTestCase):
             return await attachments._save_attachment(db, client, "task-" + device, UploadFile(
                 filename="input.txt", file=io.BytesIO(data)))
 
+    async def test_minio_staging_uses_configured_volume_and_fails_early_if_unwritable(self):
+        from app.services import artifact_staging
+        volume = Path(self.directory.name) / "volume"
+        settings = SimpleNamespace(artifact_staging_dir=str(volume), minio_endpoint="synthetic")
+        with patch.object(attachments.storage, "get_settings", return_value=settings), \
+             patch.object(attachments.storage, "_LOCAL_DIR", str(volume / "unused")), \
+             patch.object(attachments.storage, "put_stream", return_value="minio") as put:
+            artifact_staging.validate_directory()
+            row = await self.upload("one", "u1", b"abc")
+            self.assertEqual(row.backend, "minio")
+            put.assert_called_once()
+            put.side_effect = OSError("interrupted object upload")
+            with patch.object(attachments.storage, "delete", return_value=True) as remove:
+                with self.assertRaises(OSError):
+                    await self.upload("two", "u2", b"x")
+                remove.assert_called_once()
+                self.assertEqual(remove.call_args.args[1], "minio")
+            self.assertEqual(list(volume.iterdir()), [])
+            blocker = volume / "file"
+            blocker.touch()
+            settings.artifact_staging_dir = str(blocker / "dir")
+            with self.assertRaisesRegex(RuntimeError, "ARTIFACT_STAGING_DIR"):
+                artifact_staging.validate_directory()
+
     async def test_simultaneous_devices_share_owner_quota_and_org_caps_other_owners(self):
         results = await asyncio.gather(self.upload("one", "u1", b"1234"),
                                        self.upload("two", "u1", b"1234"), return_exceptions=True)

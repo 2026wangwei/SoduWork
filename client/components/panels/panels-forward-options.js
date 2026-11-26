@@ -903,7 +903,8 @@ async function _fwdCarry(tid) {
 async function _fwdPreview(tid) {
   const box = document.getElementById('fwdPrev');
   if (!box || _fwdTaskId !== _fwdId(tid)) return;
-  const snapshot = {taskId: _fwdTaskId};
+  const previous = box.confirmedInputs;
+  const snapshot = {taskId: _fwdTaskId, previous: previous?.manifest ? previous : previous?.previous};
   box.confirmedInputs = snapshot;
   const current = () => document.getElementById('fwdPrev') === box && box.confirmedInputs === snapshot;
   box.style.display = 'block';
@@ -912,7 +913,15 @@ async function _fwdPreview(tid) {
     const brief = (document.getElementById('fwdNote') || {}).value || '';
     const result = await SoduWorkAPI.aiPreview(tid, brief.trim(), _pickedRepo());
     if (!current()) return;
+    if (result?.carried && !Object.hasOwn(result.carried, 'inputManifest')) {
+      if (snapshot.previous) box.confirmedInputs = snapshot.previous;
+      else delete box.confirmedInputs;
+      box.innerHTML = '<div class="fwd-msg is-err">当前 Hub 版本不支持附件清单校验，请升级 Hub 后重新预览。' +
+        (snapshot.previous ? '继续派发将使用上次已确认的清单。' : '也可以直接派发当前需求。') + '</div>';
+      return;
+    }
     if (!Array.isArray(result?.carried?.inputManifest)) throw Error('Attachment preview unavailable');
+    delete snapshot.previous;
     snapshot.manifest = result.carried.inputManifest;
     box.innerHTML = '<div class="fwd-prev-h">将发送给 Agent 的完整内容</div>' +
       "<div class=\"fwd-prev-t\"" + ((result || {}).title ? ' data-user-content' : '') + '>' + esc((result || {}).title || '') + '</div>' +

@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from .. import models
 from ..config import get_settings
-from . import ai_prompts
+from . import ai_exec, ai_prompts, task_requirements
 
 log = logging.getLogger("uvicorn.error")
 
@@ -63,9 +64,17 @@ async def _dispatched_ids(session: AsyncSession) -> set[str]:
     """Exclude previously AI-dispatched tasks, including historical multica.* events, and tasks
     already assigned to a batch.
     """
-    rows = (await session.execute(
-        select(models.TaskEvent.task_id).where(
-            models.TaskEvent.kind.in_((*_KINDS_DISPATCHED, "ai.batched"))))).scalars().all()
+    event = models.TaskEvent
+    failure = aliased(event)
+    released = select(failure.id).where(
+        failure.task_id == event.detail["batchId"].as_string(),
+        failure.kind == ai_exec.EV_DISPATCH_FAILED,
+        failure.detail["confirmedNotStarted"].as_boolean().is_(True),
+        failure.detail["attemptId"].as_string() == failure.task_id,
+    ).exists()
+    rows = (await session.execute(select(event.task_id).where(
+        event.kind.in_(_KINDS_DISPATCHED) | ((event.kind == "ai.batched") & ~released)
+    ))).scalars().all()
     return set(rows)
 
 
@@ -110,6 +119,10 @@ async def group(session: AsyncSession) -> list[dict]:
     buckets: dict[tuple[str, str], dict] = {}
     for t in rows:
         rid = (getattr(t, "repo_id", "") or "").strip()
+        try:
+            task_requirements.ensure_executable(t)
+        except ValueError:
+            continue
         if t.id in skip:
             continue
         if not rid:

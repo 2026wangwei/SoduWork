@@ -90,6 +90,34 @@ class CloudConversationTests(unittest.IsolatedAsyncioTestCase):
             data={"options": json.dumps(body if options is None else options)},
             files=[("files", item) for item in files])
 
+    async def test_model_revision_conflict_requires_explicit_retry_and_allows_abort(self):
+        self.fixture.runner.agents.append({"key": "pi", "name": "Pi", "auth": "authed"})
+        llm = {"base": "http://127.0.0.1:1/v1", "key": "fixture-only", "model": "fixture-model"}
+
+        async def send(request):
+            return await self.create(request, agentId="pi", model=llm["model"])
+
+        for action in ("abort", "retry"):
+            request = "revision-" + action
+            with patch.object(model_catalog, "resolve", side_effect=[
+                    {**llm, "configRevision": "A"}, {**llm, "configRevision": "B"}]):
+                response = await send(request)
+            self.assertEqual(response.status_code, 409, response.text)
+            base = "/api/v1/conversation-handoffs/" + request
+            state = (await self.http.get(base)).json()
+            self.assertTrue(state["canAbort"], state)
+            self.assertFalse(state["accepted"])
+            self.assertNotIn("job.dispatch", self.fixture.peer.calls)
+            if action == "abort":
+                aborted = await self.http.post(base + "/abort")
+                self.assertEqual(aborted.json()["phase"], "aborted")
+            else:
+                with patch.object(model_catalog, "resolve", return_value={**llm, "configRevision": "B"}):
+                    retry = await send(request)
+                self.assertEqual(retry.json()["phase"], "committed", retry.text)
+                self.assertEqual(self.fixture.peer.calls.count("job.dispatch"), 1)
+                await self.fixture.complete(retry.json()["ref"])
+
     async def test_endpoint_content_releases_policy_lock_before_personal_dispatch(self):
         from types import MethodType, SimpleNamespace
         from app.services.runner_content_store import Store

@@ -332,6 +332,70 @@ class AdminRequirementDispatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(replay.json()["pending"])
             self.assertEqual(accepted, [(batch_id, attempt_id)])
 
+    async def test_batch_nonstart_releases_only_owned_transitions_and_unblocks_repo(self):
+        from app.services import autobatch
+        async with self.sessions() as session:
+            session.add(models.Repo(id="repo", project_id="project", ai_work_dir="work"))
+            await session.commit()
+        common = dict(repo_id="repo", integration_id="import")
+        ids = [await self.create(tid, **common) for tid in ("one", "two", "changed")]
+        await self.create("collecting", triage_stage="intake", **common)
+        await self.create("clarifying", triage_stage="clarifying", **common)
+        await self.create("archived", archived_at=datetime.now(timezone.utc), **common)
+        async with self.sessions() as session:
+            group, = await autobatch.group(session)
+            self.assertEqual(set(group["taskIds"]), set(ids))
+        body = {"taskIds": ids, "assigneeId": "runner:remote:pi"}
+        route = {"id": body["assigneeId"], "runnerId": "remote", "runnerBootId": "boot"}
+        with patch.object(ai_exec, "dispatch_sync", return_value={
+                **route, "ok": False, "uncertain": True, "error": "lost ACK"}), \
+             patch.object(ai_exec, "resolve_requested_sync", return_value=route), \
+             patch.object(tasks, "_push_task", new=AsyncMock()), \
+             patch.object(tasks, "_settle_work_dir", new=AsyncMock(return_value={"ok": True})), \
+             patch.object(tasks, "_attach_skills", new=AsyncMock()):
+            first = await self.http.post("/api/v1/tasks/batch-dispatch", json=body)
+            self.assertTrue(first.json()["pending"], first.text)
+            async with self.sessions() as session:
+                changed = await session.get(models.Task, "changed")
+                await task_status.mark(session, changed, "todo")
+                await task_status.mark(session, changed, "doing")
+                await session.commit()
+                candidate, = await dispatch_reconcile.candidates(
+                    session, now=datetime.now(timezone.utc) + timedelta(minutes=2))
+                state, shell = await dispatch_reconcile.apply_probe(session, candidate, {"state": "not-started"})
+                await session.commit()
+                self.assertEqual((state, shell.status), ("released", "cancel"))
+                self.assertEqual(changed.status, "doing")
+                self.assertNotIn("repo", await autobatch._busy_repos(session))
+                group, = await autobatch.group(session)
+                self.assertEqual(set(group["taskIds"]), {"one", "two"})
+                state, _ = await dispatch_reconcile.apply_probe(session, candidate, {"state": "not-started"})
+                self.assertEqual(state, "stale")
+
+    async def test_recovery_releases_legacy_batch_with_persisted_nonstart(self):
+        from app.services import task_events
+        await self.create("shell", status="doing")
+        await self.create("member")
+        async with self.sessions() as session:
+            shell = await session.get(models.Task, "shell")
+            member = await session.get(models.Task, "member")
+            session.add(models.Milestone(task_id=shell.id, src_task_id=member.id, seq=0, title="one"))
+            receipt = {"attemptId": shell.id, "batchId": shell.id}
+            task_events.record(session, member.id, "ai.batch_requested", receipt)
+            task_events.record(session, member.id, "ai.batched", receipt)
+            await task_status.mark(session, member, "doing")
+            await task_status.mark(session, shell, "todo")
+            task_events.record(session, shell.id, ai_exec.EV_DISPATCH_FAILED,
+                               {**receipt, "confirmedNotStarted": True, "expectedRef": "old"})
+            await session.commit()
+            later = datetime.now(timezone.utc) + timedelta(minutes=2)
+            old, = await dispatch_reconcile.candidates(session, now=later)
+            result = await dispatch_reconcile.probe(old)
+            action, _ = await dispatch_reconcile.apply_probe(session, old, result)
+            await session.commit()
+            self.assertEqual((action, shell.status, member.status), ("released", "cancel", "todo"))
+            self.assertEqual(await dispatch_reconcile.candidates(session, now=later), [])
+
     async def test_rejected_batch_leaves_sources_available_for_a_new_attempt(self):
         ids = [await self.create("a"), await self.create("b")]
         body = {"taskIds": ids, "assigneeId": "runner:remote:pi"}
