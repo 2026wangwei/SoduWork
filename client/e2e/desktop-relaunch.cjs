@@ -38,11 +38,12 @@ if (typeof electron !== 'string') {
     const listener = source.slice(start, end + '\n  });'.length);
     require('node:vm').runInNewContext(listener, {
       app, process, console,
+      _quitRelaunch: { deferLaunch: () => false },
       _linuxStartup: { focusRecovery: () => false },
       _fileOpenModule: fileOpen,
       _fileOpen: { enqueue: files => { state.files = files; return files.length > 0; } },
       _desktopOverlay: overlay,
-      _flags: { get: () => flags, merge: () => { throw Error('Relaunch must preserve entry preferences'); } },
+      _flags: { all: () => flags, merge: () => { throw Error('Relaunch must preserve entry preferences'); } },
       openDeskWindow: (options, anchor) => state.workspaces.push({ options, anchor }),
     }, { filename: 'main.js:second-instance' });
     app.on('second-instance', () => process.send({ kind: 'relaunch', ...state, flags }));

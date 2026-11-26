@@ -14,9 +14,13 @@ const MIME = {
   '.zip': 'application/zip', '.mp4': 'video/mp4', '.webm': 'video/webm',
 };
 
+function mimeTypeForFilename(filename) {
+  return MIME[path.extname(filename).toLowerCase()] || '';
+}
+
 function payload(filename, data) {
   return { ok: true, name: path.basename(filename), size: data.length,
-    mimeType: MIME[path.extname(filename).toLowerCase()] || 'application/octet-stream', data: data.toString('base64') };
+    mimeType: mimeTypeForFilename(filename) || 'application/octet-stream', data: data.toString('base64') };
 }
 
 // Resolve public artifact IDs in the main process; never interpret an ID as a path.
@@ -46,4 +50,4 @@ async function readAsync(session, target) {
   }
   return read(session, target);
 }
-module.exports = { read, readAsync, payload };
+module.exports = { read, readAsync, payload, mimeTypeForFilename };

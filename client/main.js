@@ -619,11 +619,19 @@ if (!gotTheLock) {
     // A window opened now would close with this exiting process.
     if (_quitRelaunch.deferLaunch(files)) return;
     if (_fileOpen.enqueue(files)) return;
-    /*
-     * Reopening the application always targets its workspace. The desktop overlay
-     * can have every entry hidden or be recovering independently; neither state
-     * should prevent restoring the workspace or change saved visibility preferences.
-     */
+    const flags = _flags.all();
+    if (process.platform !== 'darwin' && (flags.dock || flags.pet || flags.tray)) {
+      const overlay = _desktopOverlay.window;
+      if (!overlay || overlay.isDestroyed()) _desktopOverlay.createWindow();
+      else if (_desktopOverlay.emergency) _desktopOverlay.recoverFromEmergency();
+      else {
+        if (overlay.isMinimized()) overlay.restore();
+        if (!overlay.isVisible()) overlay.show();
+        overlay.focus();
+      }
+      return;
+    }
+    // With all desktop entries disabled, focusing the transparent overlay cannot reopen the app.
     try { openDeskWindow({ panel: 'workspace' }, null); }
     catch (e) { console.error('[second-instance] Failed to open workspace', e); }
   });
