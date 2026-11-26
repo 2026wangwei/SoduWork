@@ -112,6 +112,19 @@ test('later duplicate attributes do not invent dependencies the browser ignores'
   assert.deepEqual(packages.references('<img src="first.svg" SRC="unused.svg">', '.html'), ['first.svg']);
 });
 
+test('SVG image and use prefer href and keep xlink:href as a fallback', () => {
+  for (const tag of ['image', 'use']) {
+    for (const extension of ['.svg', '.html']) {
+      const refs = attrs => packages.references('<svg><' + tag + ' ' + attrs + '/></svg>', extension, true);
+      assert.deepEqual(refs('href="current.svg" xlink:href="old.svg"'), ['current.svg']);
+      assert.deepEqual(refs('xlink:href="old.svg" href="current.svg"'), ['current.svg']);
+      assert.deepEqual(refs('xlink:href="old.svg" href=""'), []);
+      assert.deepEqual(refs('xlink:href="old.svg"'), ['old.svg']);
+    }
+  }
+  assert.deepEqual(packages.references('<svg><image href=current.svg xlink:href="old.svg" /></svg>', '.html'), ['current.svg']);
+});
+
 test('delivery IPC records remote video sources while retaining local posters', async t => {
   const f = await fixture(t, 'src="https://example.test/demo.mp4" poster="media/poster.svg"');
   const result = await f.call('prepare');
