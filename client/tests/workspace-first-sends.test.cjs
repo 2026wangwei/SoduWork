@@ -30,13 +30,43 @@ function fixture({ associations, ack, fileProject, associationState, hasHistory,
     openRecord(id) { routes.push(id); navigation.generation++; model.mount(id, host); },
     openDraft(row) { drafts.push(row.intentId); pane.remove(); },
     openChat(row) { opened.push(row.sessionId); pane.remove(); }, repaint() {} });
-  return { model, opened, drafts, routes, list: (known = [], hidden = () => false) => model.recent(known, hidden),
+  return { model, opened, drafts, routes, place: window.WorkspaceFirstSends.place,
+    list: (known = [], hidden = () => false) => model.pending(known, hidden),
     render(rows) { result = Promise.resolve({ ok: true, rows }); return model.refresh(); },
     hold() { const deferred = Promise.withResolvers(); result = deferred.promise; return rows => deferred.resolve({ ok: true, rows }); },
     navigate() { navigation.generation++; }, switch() { scope = 'B'; navigation.generation++; model.clear(); },
     get pane() { return pane; } };
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
+test('first sends keep their folder before, during and after native allocation, without reversing a manual move', async () => {
+  const f = fixture(), intent = { intentId: 'intent', title: 'Same title', at: 5, sidebarProjectId: 'origin' };
+  const original = { id: 'native', title: intent.title, historyAliasIds: ['segment'], at: 5 };
+  const unrelated = { id: 'other', title: intent.title, at: 7 };
+  function paint(known, position = '', assigned = false) {
+    const recent = [unrelated], pinned = [], projects = new Map([['origin', []], ['moved', []]]);
+    if (known) (projects.get(position) || recent).push(original);
+    f.place(f.list(known ? [unrelated, original] : [unrelated]),
+      { recent, pinned, projects, hasPlacement: () => assigned }, row => row.at);
+    return { recent, origin: projects.get('origin'), moved: projects.get('moved') };
+  }
+  await f.render([{ ...intent, status: 'opening' }]);
+  assert.deepEqual(paint(false).recent, [unrelated]);
+  assert.equal(paint(false).origin[0].firstSend.intentId, 'intent');
+  for (const status of ['sending', 'failed', 'uncertain', 'accepted']) {
+    await f.render([{ ...intent, sessionId: 'segment', status }]);
+    const current = paint(true);
+    assert.deepEqual(current.recent, [unrelated]);
+    assert.equal(current.origin.length, 1);
+    assert.equal(current.origin[0].firstSend?.intentId || current.origin[0].id, status === 'accepted' ? 'native' : 'intent');
+    assert.equal(paint(true, 'moved', true).moved.length, 1);
+    assert.equal(paint(true, 'moved', true).origin.length, 0);
+    assert.equal(paint(true, 'recent', true).recent.length, 2);
+    assert.equal(paint(true, 'recent', true).origin.length, 0);
+    assert.equal(paint(false, '', true).origin.length, 0, 'archived membership stays hidden');
+  }
+  f.switch();
+  assert.equal(paint(false).origin.length, 0);
+});
 test('a failed first send with incomplete inputs shows selectable text and filenames inline, with no actions', async () => {
   const f = fixture(), row = { intentId: 'i', title: 'A title', status: 'failed', text: '<original>', attachmentNames: ['chart.png'], reason: 'offline' };
   await f.render([row]); f.model.show('i'); await settled();

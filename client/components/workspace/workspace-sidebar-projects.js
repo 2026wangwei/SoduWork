@@ -304,10 +304,12 @@
         return state().fileChat(row.sessionId, row.sidebarProjectId,
           { id: row.sessionId, title: row.title, at: row.at }, { ifUnassigned: true });
       },
-      projectForChat(id) {
+      projectForChat(id, pendingProjectId) {
         const wanted = String(id || '');
         if (!wanted) return null;
-        const project = state().view(getItems()).projects.find(item => item.items.some(row => row.id === wanted));
+        const groups = state().view(getItems());
+        const project = groups.projects.find(item => item.items.some(row => row.id === wanted || row.historyAliasIds?.includes(wanted))) ||
+          (pendingProjectId && !groups.hasPlacement(wanted) && groups.projects.find(item => item.id === pendingProjectId));
         return project ? { id: project.id, name: project.name, businessProjectId: project.businessProjectId || '', folders: project.folders.slice() } : null;
       },
       /* Pinning uses togglePin independently of drag-based project moves. */

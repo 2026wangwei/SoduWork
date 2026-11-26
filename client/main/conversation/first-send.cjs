@@ -71,7 +71,7 @@ function create({ root, actor, assertCurrent, open, send, received, notify }) {
       !row.options.pluginEditId && !row.options.contextPrompts?.length &&
       (!row.options.intent || row.options.intent === 'chat') && row.options.mode !== 'goal';
     return { attemptId: attemptOf(row), ...select(row, ['intentId', 'sessionId', 'title', 'text', 'at', 'status', 'reason', 'adapterId',
-      'modelName', 'acceptedAt', 'attachmentNames', 'confirmed']), ...(preparation?.userText ?
+      'modelName', 'acceptedAt', 'attachmentNames', 'confirmed', 'sidebarProjectId']), ...(preparation?.userText ?
         { text: preparation.userText } : {}), canAttachFailed,
       ...(starter ? { draftOptions: { ...select(row.options, ['adapterId', 'modelName', 'thinkingLevel', 'reasoningEffort',
         'capabilities', 'cwd', 'workspaceLabel', 'mode', 'accessMode', 'projectId', 'repoId', 'memoryIds']),
@@ -311,7 +311,7 @@ function create({ root, actor, assertCurrent, open, send, received, notify }) {
       recover(files, row, context); rows.push(publicRow(row));
     }
     await assertCurrent(context);
-    return { ok: true, rows: rows.filter(row => row.status !== 'accepted' || Date.now() - row.acceptedAt < 60000)
+    return { ok: true, rows: rows.filter(row => row.status !== 'accepted' || row.sidebarProjectId || Date.now() - row.acceptedAt < 60000)
       .sort((a,b) => b.at - a.at) };
   }
   async function discard(event, id, expectedAttempt) {

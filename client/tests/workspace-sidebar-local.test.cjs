@@ -347,6 +347,16 @@ test('an actual native join migrates retired-child pins and groups to the live p
   assert.deepEqual(plain(state.get().projects[0].chatIds), ['public-parent']);
   assert.equal(state.view([]).pinned[0].title, 'Public local title');
   assert.equal(f.api.localHistoryId('runtime-child'), 'public-parent');
+  const origin = state.get().projects[0].id;
+  const destination = state.saveProject({ name: 'Moved after joining' });
+  const parent = page.chats.find(row => row.id === 'public-parent');
+  state.move(parent, destination, '', page.chats);
+  const reopened = f.open('b');
+  assert.equal(reopened.view(page.chats).hasPlacement('runtime-child'), true);
+  assert.equal(reopened.fileChat('runtime-child', origin, { id: 'runtime-child', title: 'First send' },
+    { ifUnassigned: true }), true);
+  assert.deepEqual(plain(reopened.get().projects.find(row => row.id === origin).chatIds), []);
+  assert.deepEqual(plain(reopened.get().projects.find(row => row.id === destination).chatIds), ['public-parent']);
 });
 
 test('a later native join canonicalizes an already-saved device layout without reviving obsolete account pins', t => {

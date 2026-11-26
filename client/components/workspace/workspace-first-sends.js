@@ -10,6 +10,33 @@
     return row.reason || status(row);
   }
 
+  // Paint the intent before native allocation and keep its slot until the
+  // durable membership arrives. A manual move always owns the destination.
+  function place(pending, { recent, pinned, projects, hasPlacement }, createdAt) {
+    const sections = [recent, pinned, ...projects.values()];
+    for (const item of pending) {
+      const { sessionId, sidebarProjectId, status } = item.firstSend;
+      const target = projects.get(sidebarProjectId) || recent;
+      let displayed = false, nativeRow;
+      const assigned = sessionId && hasPlacement?.(sessionId);
+      if (sessionId) for (const section of sections) {
+        const index = section.findIndex(row => row.id === sessionId || row.historyAliasIds?.includes(sessionId));
+        if (index < 0) continue;
+        nativeRow = section[index];
+        if (section === recent && target !== recent && !assigned && !hasPlacement?.(nativeRow.id)) {
+          section.splice(index, 1);
+        } else {
+          if (status !== 'accepted') section[index] = item;
+          displayed = true;
+        }
+      }
+      if (displayed || assigned) continue;
+      const row = status === 'accepted' && nativeRow ? nativeRow : item;
+      const index = target.findIndex(existing => createdAt(existing) < createdAt(row));
+      target.splice(index < 0 ? target.length : index, 0, row);
+    }
+  }
+
   function create({ api, owner, repaint, openChat, openRecord, openDraft, associationState, fileProject, hasHistory }) {
     let rows = new Map(), loadedOwner = '', version = 0, off, detail;
     let applying = new Set();
@@ -60,11 +87,11 @@
       repaint();
       try { await recoverAssociations(source, scope, generation); } catch { /* Retry on a later history refresh. */ }
     }
-    function recent(known, isHidden) {
+    function pending(known, isHidden) {
       if (loadedOwner !== owner()) return [];
       const ids = new Set(known.flatMap(row => [row.id, ...(row.historyAliasIds || [])]));
       return [...rows.values()].filter(row => !row.sessionId || (!isHidden(row.sessionId) &&
-        (row.status !== 'accepted' || !ids.has(row.sessionId)))).map(row => ({
+        (row.status !== 'accepted' || row.sidebarProjectId || !ids.has(row.sessionId)))).map(row => ({
         localId: row.intentId, firstSend: row, title: row.title, at: row.at, count: 0,
         state: ({ opening: 'starting', sending: 'running', accepted: 'completed', failed: 'failed', uncertain: 'waiting' })[row.status],
       })).sort((a, b) => b.at - a.at);
@@ -146,7 +173,7 @@
       void refresh();
       return true;
     }
-    return { clear, refresh, recent, show, mount, discard, get activeId() { return activeId(); } };
+    return { clear, refresh, pending, show, mount, discard, get activeId() { return activeId(); } };
   }
-  global.WorkspaceFirstSends = { create, status, canDiscard };
+  global.WorkspaceFirstSends = { create, status, canDiscard, place };
 })(window);

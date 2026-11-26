@@ -586,7 +586,11 @@
         return { ...copy(p), items: state.manualOrder.projects[p.id] ? items : stableNewestFirst(items) };
       }),
         pinned: resolve(state.pins),
-        recent: recentItems, collapsed: state.collapsed };
+        recent: recentItems, collapsed: state.collapsed,
+        hasPlacement(id) {
+          const currentId = localHistoryId(id) || id;
+          return allocated.has(currentId) || ordered.has(currentId);
+        } };
     }
     return {
       applyRemoteProject(project) {
@@ -717,6 +721,11 @@
       fileChat(id, projectId, row, { ifUnassigned = false } = {}) {
         id = String(id || '');
         if (!id) return false;
+        // Delayed native receipts can name a child that joined the public chat after its first send.
+        if (ifUnassigned) {
+          id = localHistoryId(id) || id;
+          if (row && row.id !== id) row = { ...row, id };
+        }
         let filed = false;
         commit(next => {
           const same = references([id], row ? [row] : []);

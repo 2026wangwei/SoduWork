@@ -105,31 +105,36 @@
   let localError = '', accountError = '', nativeRefreshStarted = false;
   let localRefreshTimer = null, localRefreshPending = false, closed = false;
   const historyApi = () => global.soduWorkAPI && (global.soduWorkAPI.conversationSession || global.soduWorkAPI.piSession);
-  function sidebarProjectContext(id) {
-    const project = ctx.sidebarProjects?.projectForChat(id);
+  function sidebarProjectContext(id, pendingProjectId) {
+    const project = ctx.sidebarProjects?.projectForChat(id, pendingProjectId);
     return project ? { sidebarProjectId: project.id, sidebarProjectName: project.name, projectId: project.businessProjectId || '' } : {};
+  }
+  function firstSendHidden(id) {
+    const currentId = canonicalLocalId(id) || id;
+    const record = localRecords.get(currentId);
+    return record?.archived || record?.deleted || hiddenRow({ id: currentId });
   }
   const firstSends = global.WorkspaceFirstSends?.create({ api: historyApi, owner: accountOwner,
     repaint() { if (!closed && ctx.root) ctx.renderChats(); },
     associationState(id) {
       if (supportsLocalHistory() && !localReady) return 'pending';
-      const record = localRecords.get(canonicalLocalId(id) || id);
-      return record?.archived || record?.deleted || hiddenRow({ id }) ? 'hidden' : 'active';
+      return firstSendHidden(id) ? 'hidden' : 'active';
     },
     fileProject: row => ctx.sidebarProjects?.recoverFirstSend(row),
     openRecord: id => global.WorkspaceHost?.open('create', { firstSendIntentId: id }),
     openDraft: row => global.WorkspaceHost?.open('create', { firstSendDraft: row }),
     hasHistory(id) {
-      if (!id || historyOwner !== accountOwner() || hiddenRow({ id })) return false;
+      if (!id || historyOwner !== accountOwner() || firstSendHidden(id)) return false;
       const local = localRecords.get(canonicalLocalId(id) || id);
       if (local) return !local.archived && !local.deleted && !hiddenRow(local);
       return ctx.chatItems.some(row => !row.pending && !row.archived && !row.deleted && !hiddenRow(row) &&
         (row.id === id || row.historyAliasIds?.includes(id)));
     },
     openChat(row) {
-      const opened = global.WorkspaceHost?.open('create', { tab: 'chat', chatId: row.sessionId, chatTitle: row.title || '',
-        ...sidebarProjectContext(row.sessionId) });
-      ctx.setActiveChat(row.sessionId);
+      const id = canonicalLocalId(row.sessionId) || row.sessionId;
+      const opened = global.WorkspaceHost?.open('create', { tab: 'chat', chatId: id, chatTitle: row.title || '',
+        ...sidebarProjectContext(id, row.sidebarProjectId) });
+      ctx.setActiveChat(id);
       return opened;
     } });
   const supportsLocalHistory = () => historyApi()?.localHistorySupported === true;
@@ -699,7 +704,7 @@ function _newChatRow() {
       if (id && global.WorkspaceHost) {
         global.WorkspaceHost.open('create', {
           tab: 'chat', chatId: id, chatTitle: title.textContent || '', taskSession: b.dataset.taskSession === '1',
-          ...sidebarProjectContext(b.dataset.sidebarChatId || id),
+          ...sidebarProjectContext(b.dataset.sidebarChatId || id, b.closest?.('[data-project-id]')?.dataset.projectId),
         });
         ctx.setActiveChat(id);
         return;
@@ -1018,16 +1023,9 @@ function renderChats() {
     const visible = items => items.filter(item => !hiddenRow(item)).flatMap(item => displayed.has(item.id) ? [displayed.get(item.id)] : []);
     const pinned = visible(groups ? groups.pinned : list.filter((item) => pins.has(String(item.id || ''))));
     const recent = visible(groups ? groups.recent : list.filter((item) => !pins.has(String(item.id || ''))));
-    const pending = firstSends?.recent(list, id => hiddenRow({ id }) || localRecords.get(id)?.archived || localRecords.get(id)?.deleted) || [];
-    for (const item of pending) {
-      const native = item.firstSend.sessionId;
-      const duplicate = native ? recent.findIndex(row => row.id === native || row.historyAliasIds?.includes(native)) : -1;
-      if (duplicate >= 0) recent[duplicate] = item;
-      else {
-        const index = recent.findIndex(row => global.WorkspaceChatHistory._chatAt(row) < item.at);
-        recent.splice(index < 0 ? recent.length : index, 0, item);
-      }
-    }
+    const projects = new Map((groups?.projects || []).map(project => [project.id, visible(project.items)]));
+    const pending = firstSends?.pending(list, firstSendHidden) || [];
+    global.WorkspaceFirstSends?.place(pending, { pinned, recent, projects, hasPlacement: groups?.hasPlacement }, global.WorkspaceChatHistory._chatAt);
     const pinnedBox = ctx.root.querySelector('#wsPinnedBox');
     pinnedBox.hidden = !pinned.length;
     pinnedBox.classList.toggle('is-empty', !pinned.length);
@@ -1058,7 +1056,7 @@ function renderChats() {
         ? historyText('workspace.history.retry', '重新加载') : historyText('workspace.history.more', '加载更多');
     }
     for (const project of groups?.projects || []) {
-      const items = visible(project.items);
+      const items = projects.get(project.id);
       _syncChatList(project.target, ctx.sidebarProjects.previewItems(project, items), false, pool, '拖入会话，开始整理');
     }
     if (!recent.length && !localError && !accountError) ctx._empty(ctx.chats, list.length ? '没有更多聊天' :
