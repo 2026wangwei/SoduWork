@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const path = require('node:path').posix;
 const frontmatter = require('../conversation/skill-frontmatter');
 const resources = require('../plugin-resources');
 const { createEntriesSync } = require('../conversation/zip-archive');
@@ -24,7 +25,21 @@ function read(bytes, app) {
   const prefix = roots[0].name.slice(0, -'SKILL.md'.length);
   if (entries.some(item => !item.name.startsWith(prefix))) throw Error('技能包根目录之外还有文件');
   const meta = metadata(roots[0].body, app);
-  return { ...meta, bytes };
+  return { ...meta, bytes, members: entries.map(item => item.name.slice(prefix.length)) };
+}
+
+// Workspace-relative names of the Skill Studio build outputs. Keep the raw
+// files addressable, even when the chat represents the build with an install card.
+function deliveryPaths(relative, skill) {
+  const dir = path.dirname(relative), filename = path.basename(relative);
+  const sources = skill.members.flatMap(name => [
+    path.join(dir, skill.name, name), path.join(dir, 'source', skill.name, name),
+    path.join(path.dirname(dir), skill.name, name),
+  ]);
+  const prefix = filename.slice(0, -'soduwork.skill'.length);
+  if (!filename.endsWith('-soduwork.skill') || !prefix.startsWith(skill.name + '-')) return sources;
+  return [...sources, ...['portable', 'codex', 'claude', 'copilot'].map(target => path.join(dir, prefix + target + '.zip')),
+    ...['CHANGES.md', 'INSTALL.md', 'skill-report.json'].map(name => path.join(dir, name))];
 }
 
 function legacyArchive(bytes) {
@@ -81,4 +96,4 @@ function result(skill, source) {
   return { ok: true, kind: 'skill', skillPackage: { name: skill.name + '.skill', base64: skill.bytes.toString('base64') }, source };
 }
 
-module.exports = { MAX_BYTES, read, legacy, fromLegacy, result };
+module.exports = { MAX_BYTES, read, deliveryPaths, legacy, fromLegacy, result };

@@ -10,7 +10,7 @@ async function create(app, root, sessions) {
   const store = require('../../main/conversation/replica-store.cjs').create(path.join(root, 'legacy.sqlite'));
   const history = require('../../main/conversation/shared-history.cjs').create({ app, session, store, identityOf: () => identity, workRoot: () => root });
   const oldHeading = '旧版 Pi 生成的网站', newHeading = '新临时目录生成的网站';
-  const html = heading => '<!doctype html><meta charset="utf-8"><h1>' + heading + '</h1>';
+  const html = heading => '<!doctype html><meta charset="utf-8"><title>' + heading + '</title><h1>' + heading + '</h1>';
   const fileRoot = path.join(root, 'pi-agent', 'sessions', 'legacy-project');
   fs.mkdirSync(fileRoot, { recursive: true });
   const owner = segments.scope(identity), creator = { account: 'one', hub: identity.hub };
@@ -88,7 +88,7 @@ async function create(app, root, sessions) {
   await segments.save(app, { version: 1, id: logicalId, owner, originAdapter: 'pi', cwd: active.cwd,
     deviceHistoryComplete: true, segments: [part(retired)], active: part(active), prefix, at: Date.now() });
   await saveLegacy({ ...active, id: logicalId, runtimeConversationId: logicalId });
-  return { id: row.id, retiredId: logicalId, oldHeading, newHeading, continued,
+  return { id: row.id, cwd: row.cwd, retiredId: logicalId, oldHeading, newHeading, continued,
     preview: id => history.open(id, { historyPreview: true, allowContinuation: true }), close: () => history.close() };
 }
 module.exports = { create };

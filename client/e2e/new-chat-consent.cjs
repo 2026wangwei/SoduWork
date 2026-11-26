@@ -112,6 +112,7 @@ async function sendConversation(ref, text, _files, options, _observe, _request, 
     assert.ok(result.ok, result.reason);
     await piRecovery.history.capture(handle, identity);
     await piRecovery.history.backfill(handle.sessionId);
+    win.webContents.send('pi-session-event', { kind: 'settled', ref, sessionId: handle.sessionId, snapshot: handle.snapshot() });
   }
   return { ok: true, snapshot: handle.snapshot() };
 }
@@ -231,6 +232,26 @@ app.whenReady().then(async () => {
       assert.equal(handle.snapshot().accessPolicy.mode, 'full');
       assert.equal(dialogs, beforeDialogs + 2); assert.equal(piRecovery.model.requests.length, 1);
       report.cases.push('After sending in another conversation, a completed Pi SDK turn reopens in the account’s passive history with Full access selected and enabled. Switching to Standard reattaches the original runtime; switching back to Full requires fresh native modal confirmation.');
+      // Older clients can commit the display transcript, then fail to finish
+      // copying the native history before the user switches away or exits.
+      await draft('A different unsent draft');
+      const store = piRecovery.history.store, row = await store.get(chatId);
+      const { snapshot, digest } = await store.deviceHistory(chatId);
+      assert.equal((await store.saveDeviceHistory(chatId, { snapshot, coverage: { complete: false } },
+        { expectedHistoryDigest: digest, expectedRevision: row.replicaRevision })).ok, true);
+      await js('openComposePanel({chatId:' + JSON.stringify(chatId) + '});void 0;');
+      await until('document.querySelector("#nchatList")?.textContent.includes("Fixture complete.") && !NativeChat.isBusy()', 'directory preview');
+      await click('#nchatInput');
+      await win.webContents.insertText('Follow up from the directory');
+      piRecovery.model.reply(() => ({ text: 'Directory follow-up received.' }));
+      await click('#nchatSend');
+      await until('document.querySelector("#nchatList")?.textContent.includes("Directory follow-up received.")', 'continued Pi reply');
+      assert.equal(piRecovery.model.requests.length, 2);
+      const context = piRecovery.model.requests.at(-1).messages;
+      for (const text of ['Consent fixture pi', 'Follow up from the directory']) {
+        assert.equal(context.filter(message => message.role === 'user' && JSON.stringify(message.content).includes(text)).length, 1);
+      }
+      report.cases.push('A directory entry with a partial SQLite body rechecks the Pi archive and accepts a real follow-up in the same conversation.');
       await piRecovery.history.close(); await piRecovery.model.close(); piRecovery = null;
     }
   }

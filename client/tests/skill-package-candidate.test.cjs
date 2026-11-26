@@ -86,6 +86,9 @@ test('legacy resource checksums are still verified before conversion', t => {
 });
 test('skill reads preserve active-turn and current-conversation ownership boundaries', t => {
   const f = fixture(t); f.write('result.skill', zip()); const row = shown(f.session)[0];
+  assert.ok(row.pluginDeliveryPaths.includes('story-editor/references/rules.md'));
+  assert.ok(!row.pluginDeliveryPaths.includes('references/rules.md'));
+  assert.ok(!row.pluginDeliveryPaths.includes('report.zip'));
   f.session.inFlight = () => true;
   assert.equal(drafts.readSession(f.session, row.artifactId).ok, false);
   f.session.inFlight = () => false;

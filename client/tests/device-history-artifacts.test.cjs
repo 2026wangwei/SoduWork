@@ -732,6 +732,37 @@ test('four retained sparse 128 MiB files reserve the byte budget ahead of a new 
   assert.equal(offline.archive.omitted, 2);
 });
 
+test('partial legacy conversation text does not hide a locally verified single-file delivery', async t => {
+  let history;
+  const f = fixture(t, () => history?.close()), app = { getPath: () => f.workRoot };
+  const identity = require('./helpers/platform-session-fixture.cjs').identity();
+  const row = { id: 'legacy-report', adapterId: 'opencode', cwd: f.cwd, count: 2,
+    workOwner: require('../main/platform-connections/runtime.cjs').scope(identity),
+    creator: { account: 'one', hub: identity.hub } };
+  const name = 'guide.html', html = '<title>Travel guide</title><h1>Original</h1>';
+  f.write(name, html);
+  const receipts = await project.capture({ row, journal: { cwd: f.cwd, turnId: 'legacy-scan',
+    files: [{ path: name, action: 'created', after: { exists: true, path: name,
+      size: Buffer.byteLength(html), hash: crypto.createHash('sha256').update(html).digest('hex') } }] } });
+  history = require('../main/conversation/shared-history.cjs').create({ app, identityOf: () => identity,
+    session: { historyEntry: async () => ({ ok: false, notFound: true }), archivedConversation: async () => null,
+      findBySessionId: () => null }, store: require('../main/conversation/replica-store.cjs')
+      .createWorker(path.join(f.workRoot, 'conversation-replicas', 'history.sqlite')) });
+  const [entry] = await history.register([row]);
+  await history.store.saveDeviceHistory(row.id, { localArtifactHistory: receipts,
+    snapshot: { messages: [{ role: 'assistant', text: 'guide.html' }], tools: [] }, coverage: { complete: false, sources: [] } },
+  { expectedRevision: entry.replicaRevision });
+  const view = await history.open(row.id, { historyPreview: true });
+  const index = await runtime.viewSnapshotAsync(view);
+  const pinned = index.items.filter(item => item.versionId);
+  assert.equal(pinned.length, 1);
+  assert.equal(pinned[0].relative, name);
+  f.write(name, '<title>Replacement</title>');
+  const original = await require('../main/conversation/delivery-package-worker').prepare(view, [pinned[0].artifactId]);
+  assert.equal(original.bytes.toString(), html);
+  await view.close();
+});
+
 test('a partial legacy archive can finish after restart when the original receipt becomes readable again', async t => {
   let history;
   const f = fixture(t, () => history?.close()), app = { getPath: () => f.workRoot };

@@ -445,7 +445,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
     let content = null, bodyMissing = false;
     if (!row.cached) {
       try { content = await deviceHistory.saved(row.id, { refresh: true, preferRecorded: true,
-        allowUndispatchedTail: historyPreview && allowContinuation }); }
+        continuationPreview: historyPreview && allowContinuation }); }
       catch (error) { if (error.code !== 'NATIVE_HISTORY_MISSING') throw error; bodyMissing = true; }
     }
     const nativeUnavailable = content?.nativeReadError && content.nativeReadError.code !== 'NATIVE_HISTORY_MISSING';

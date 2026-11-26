@@ -8,7 +8,7 @@ const realpath = fs.realpathSync.native || fs.realpathSync;
 const metadataKeys = ['artifactId', 'kind', 'name', 'title', 'summary', 'relative',
   'size', 'at', 'preview', 'primary', 'role', 'processEvidence', 'evidenceSource', 'actions',
   'pluginDraft', 'pluginPackage', 'skillPackage', 'pluginName', 'pluginVersion',
-  'pluginIdentity', 'pluginSuperseded', 'pluginRevision', 'pluginRevisionAt'];
+  'pluginDeliveryPaths', 'pluginIdentity', 'pluginSuperseded', 'pluginRevision', 'pluginRevisionAt'];
 const stamp = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
 const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]);
 

@@ -44,12 +44,15 @@ async function seed(app, root) {
   const history = historyFor(app, root, rows);
   try {
     const cwd = rows[0].cwd, delivery = path.join(cwd, 'delivery');
+    fs.cpSync(source, path.join(cwd, name), { recursive: true });
     const built = require('../../../skills/skill-studio/scripts/skill-package.cjs').build({ source, out: delivery, targets: 'all' });
     const exports = built.exports.map(item => 'delivery/' + item.file);
     const relative = exports.find(file => file.endsWith('.skill'));
     await history.register(rows);
     for (const row of rows) {
-      const names = row.id === skillChat ? exports : row.id === otherChat ? [] : await plugins.write(root, row);
+      const names = row.id === skillChat ? [...exports, name + '/SKILL.md', name + '/references/rules.md',
+        'delivery/source/' + name + '/SKILL.md', 'delivery/source/' + name + '/references/rules.md',
+        'delivery/INSTALL.md', 'delivery/CHANGES.md', 'delivery/skill-report.json'] : row.id === otherChat ? [] : await plugins.write(root, row);
       const files = names.map(name => {
         const bytes = fs.readFileSync(path.join(row.cwd, name));
         return { path: name, action: 'created', after: { path: name, exists: true, size: bytes.length,

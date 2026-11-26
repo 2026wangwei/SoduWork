@@ -128,11 +128,11 @@ async function syncDirectories(profile, paths) {
 // Only host-verified file receipts can enter the archive. The SQLite history
 // publishes a generation after its files and directory entries are durable.
 async function preserve(profile, id, history, previous, guard, options = {}) {
-  if (!options.pinPiWebsites) return preserveGeneration(profile, id, history, previous, guard, options);
-  const { pinLegacyWebsites } = require('./artifact-versions.cjs');
-  const pinned = await pinLegacyWebsites(profile, id, previous, guard);
+  if (!options.pinLegacyDeliveries) return preserveGeneration(profile, id, history, previous, guard, options);
+  const { pinLegacyDeliveries } = require('./artifact-versions.cjs');
+  const pinned = await pinLegacyDeliveries(profile, id, previous, guard);
   const saved = await preserveGeneration(profile, id, history, pinned, guard, options);
-  try { return await pinLegacyWebsites(profile, id, saved, guard); }
+  try { return await pinLegacyDeliveries(profile, id, saved, guard); }
   catch (error) {
     await retire(profile, id, previous?.archive, saved?.archive, false).catch(() => {});
     throw error;

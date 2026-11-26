@@ -150,6 +150,9 @@ if (typeof electron === 'string') {
     assert.notEqual(await run('list.querySelector("[data-chat-media]").dataset.chatMedia'), loadingMedia);
     assert.equal(await run('list.querySelector(".nmd [role=status]").textContent'), '图片暂时无法预览 · shots/lost.png');
     assert.equal(await run('list.querySelectorAll("button,img,a").length'), 0);
+    await run(`paintHistory(historyFiles, ['index.html', 'absent/index.html']); void 0;`);
+    assert.deepEqual(await run(`Array.from(list.querySelectorAll('.noutput-gallery [data-open-app]'), node => node.dataset.openApp)`), ['final']);
+    assert.equal(await run('list.querySelector(".noutput-gallery [role=status]").textContent'), '图片暂时无法预览 · absent/index.html');
     await run(`paintHistory(historyFiles, ['shots/menu.png', '../shots/fight.png']); void 0;`);
     assert.equal(await run('Boolean(list.querySelector("pre code")) && !list.querySelector("img")'), true);
     report.cases.push({ historyGallery: 'two decoded screenshots, two unavailable entries, one message output and one session output' });

@@ -76,7 +76,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     if (localArtifactHistory?.archive) {
       localArtifactHistory = await archive.rebind(app.getPath('userData'), row.id, localArtifactHistory, current);
       if (!received) localArtifactHistory = await require('./artifact-versions.cjs')
-        .pinLegacyWebsites(app.getPath('userData'), row.id, localArtifactHistory, current);
+        .pinLegacyDeliveries(app.getPath('userData'), row.id, localArtifactHistory, current);
     }
     if (localArtifactHistory?.archive?.pendingFiles?.length) {
       try {
@@ -146,7 +146,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
       if (!collected) return;
       check();
       const profile = app.getPath('userData');
-      const history = await archive.preserve(profile, row.id, collected, prior, check, { pinPiWebsites: !row.deviceTransferId });
+      const history = await archive.preserve(profile, row.id, collected, prior, check, { pinLegacyDeliveries: !row.deviceTransferId });
       if (row.deviceTransferId) history.transferId = row.deviceTransferId;
       const { digest: oldDigest, savedAt, ...body } = priorBody || {
         snapshot: native.publicSnapshot(snapshot), coverage: { complete: false, sources: [] },
@@ -309,7 +309,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
         if (artifacts) {
           try {
             data.localArtifactHistory = await archive.preserve(app.getPath('userData'), row.id, artifacts, prior, check,
-              { pinPiWebsites: !data.imported });
+              { pinLegacyDeliveries: !data.imported });
           } catch (error) {
             check();
             if (error.historyAccessFailure) throw error;
@@ -387,7 +387,8 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     try { return require('./delivery-workspace.cjs').resolve(cwd, row.deliveryWorkspaceKey).draftRoot === receipt.root; }
     catch (_) { return false; }
   }
-  async function saved(id, { refresh: update = false, verify, preferRecorded = false, onlyUpgrade = false, allowUndispatchedTail = false } = {}) {
+  async function saved(id, { refresh: update = false, verify, preferRecorded = false, onlyUpgrade = false,
+    continuationPreview = false, allowUndispatchedTail = continuationPreview } = {}) {
     const row = await resolve(id);
     if (!row || row.deleted || row.cached) return null;
     const check = readGuard(row, verify); check();
@@ -428,12 +429,13 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
         !data?.localPiOriginReviewed && native.retiredPiOrigin(manifest));
     const checkTail = checkLocalTail && manifest && !manifest.deviceShared && !manifest.deviceTransferId &&
       (manifest.active?.started === false || manifest.historyRecovery?.transcriptTail);
-    const recorded = preferRecorded && dialogue.length && checkTail ? withTranscript(data, dialogue) : null;
-    const verifyTail = recorded?.unconfirmedUserTail || checkTail && !data?.snapshot && dialogue.at(-1)?.role === 'user' ||
-      manifest?.historyRecovery?.transcriptTail && recorded && recorded !== data;
-    // Paint committed dialogue immediately unless this visit needs fresh evidence.
+    const recorded = preferRecorded && dialogue.length && (checkTail || continuationPreview) ? withTranscript(data, dialogue) : null;
+    const verifyTail = checkTail && (recorded?.unconfirmedUserTail || !data?.snapshot && dialogue.at(-1)?.role === 'user' ||
+      manifest?.historyRecovery?.transcriptTail && recorded && recorded !== data);
+    // A newer displayed turn can reach SQLite before the native snapshot does.
+    // Verify that turn on this visit before deciding whether to disable the composer.
     const localDisplay = preferRecorded && !shared && !verify && dialogue.length > 0 &&
-      !verifyTail && !legacyPi;
+      !verifyTail && !legacyPi && (!continuationPreview || recorded?.coverage?.complete);
     // A dormant source certifies absence only at the time of its probe. It
     // cannot stand in for an independently archived turn on a later resume.
     const hadDormantSegment = data?.coverage?.sources?.some(source => source.dormant);
@@ -443,7 +445,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
         // Recheck the dormant segment on this open, even if a background read was already in flight.
         data = await refresh(row.id, { verify: checkTail ? check : verify });
         refreshed = true;
-        if (checkTail) inspected = false;
+        if (checkTail || continuationPreview) inspected = false;
       }
       catch (error) {
         if (error.historyAccessFailure || error.code === 'HISTORY_CONCURRENT_UPDATE') throw error;
@@ -485,11 +487,16 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     }
     // Legacy replicas can outlive the native CLI journal. Upgrade only their
     // already-verified file identities while the original workspace exists.
-    if (data?.coverage?.complete && archive.needsBackup(data.localArtifactHistory) && !data.imported && !data.historyProtection &&
-        allowsArtifacts(check.evidence()) && await canBackfill(row, data.localArtifactHistory)) {
+    // Text coverage is independent from same-session file receipts. A partial
+    // transcript may still own an intact document in the original directory.
+    const receipts = data?.localArtifactHistory;
+    const localReceipts = receipts?.items?.length && !row.deviceTransferId &&
+      [...receipts.items, ...(receipts.resources || [])].every(item => item.source?.sessionId === row.id);
+    if ((data?.coverage?.complete || localReceipts) && archive.needsBackup(receipts) && !data.imported && !data.historyProtection &&
+        allowsArtifacts(check.evidence()) && await canBackfill(row, receipts)) {
       const { digest: oldDigest, savedAt, nativeReadError, ...stored } = data;
       const prior = data.localArtifactHistory;
-      const updated = await archive.preserve(app.getPath('userData'), row.id, prior, prior, check, { pinPiWebsites: true })
+      const updated = await archive.preserve(app.getPath('userData'), row.id, prior, prior, check, { pinLegacyDeliveries: true })
         .catch(error => { if (error.historyAccessFailure) throw error; return null; });
       check();
       if (updated) {
@@ -514,7 +521,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
       data = { ...data, snapshot: require('./native-agent-source.cjs').restoreRunnerSources(data.snapshot, data.coverage.sources) };
     if (data && transcriptError) return { ...data, coverage: { ...data.coverage, complete: false },
       nativeReadError: { code: transcriptError.code, reason: '设备对话记录校验失败，已显示可读取的执行记录' } };
-    if (!dialogue.length || !usesDeviceDialogue(check.evidence())) return data;
+    if (!dialogue.length || !usesDeviceDialogue(check.evidence()) || localDisplay && recorded?.coverage?.complete) return data;
     const combined = withTranscript(data, dialogue);
     if (!combined?.unconfirmedUserTail || !refreshed || !checkTail || !data?.coverage?.complete ||
         data.nativeReadError || data.historyProtection || data.imported || data.coverage.unresolvedTools?.length ||

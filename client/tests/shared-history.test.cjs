@@ -518,6 +518,11 @@ test('a verified prefix enriches the displayed dialogue without discarding a new
   await assert.rejects(f.history.exportPortable(f.row.id), /尚未完整/);
   fs.appendFileSync(f.file, '\n' + live.slice(2).map((m, i) => JSON.stringify({ type: 'message', id: 'new-' + i,
     message: { role: m.role, content: [{ type: 'text', text: m.text }] } })).join('\n') + '\n');
+  const view = await f.history.open(f.row.id, { historyPreview: true, allowContinuation: true });
+  try {
+    assert.equal(view.snapshot().execution.canContinueOnDevice, true);
+    assert.deepEqual(view.snapshot().messages.map(m => m.text), live.map(m => m.text));
+  } finally { await view.close(); }
   const restored = await f.history.prepareContinuation(f.row.id, { refresh: true });
   assert.deepEqual(restored.prefix.messages.map(m => m.text), live.map(m => m.text));
 });
@@ -774,6 +779,21 @@ test('a cold desktop preview paints committed dialogue while the native history 
     assert.deepEqual(view.snapshot().messages.map(m => m.text), messages.map(m => m.text));
     await view.close();
   } finally { clearTimeout(timer); release(); }
+});
+
+test('directory previews can continue when only the display transcript was cached and the native archive survives', async t => {
+  const f = setup(t);
+  const [row] = await f.history.register([f.row]);
+  const messages = [{ role: 'user', text: 'saved by Alice' }, { role: 'assistant', text: 'local answer' }];
+  assert.equal((await f.store.saveConversationTranscript(row.id, messages, { expectedRevision: row.replicaRevision,
+    expectedCatalogRevision: row.revision, expectedTransferId: '' })).ok, true);
+  assert.equal(await f.store.deviceHistory(row.id), null);
+  const view = await f.history.open(row.id, { historyPreview: true, allowContinuation: true });
+  try {
+    assert.equal(view.snapshot().execution.canContinueOnDevice, true);
+    assert.deepEqual(view.snapshot().messages.map(m => m.text), messages.map(m => m.text));
+    assert.equal((await f.store.deviceHistory(row.id)).coverage.complete, true);
+  } finally { await view.close(); }
 });
 
 test('distinct saved versions keep rich native messages and mark the independent dialogue', async t => {

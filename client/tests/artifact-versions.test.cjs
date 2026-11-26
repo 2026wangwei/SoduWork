@@ -105,6 +105,43 @@ test('reopened cards reveal and package their own turn after the workspace is re
   assert.equal(calls.length, 2);
 });
 
+test('a single document in a legacy directory history retains its original bytes and library revision', async t => {
+  const f = fixture(t), runtime = require('../main/conversation/artifact-runtime');
+  const packages = require('../main/conversation/delivery-package-worker');
+  const name = 'report.md', file = path.join(f.cwd, name);
+  const before = await journal.snapshot(f.cwd);
+  fs.writeFileSync(file, '# Original report');
+  const change = journal.compare(before, await journal.snapshot(f.cwd), { turnId: 'old-scan' });
+  const collected = await history.capture({ row: { id: f.id, cwd: f.cwd, adapterId: 'kimi' }, journal: change });
+  const saved = await storage.preserve(f.profile, f.id, collected, null, f.guard);
+  const item = collected.items.find(row => row.metadata.relative === name);
+  const live = { cwd: f.cwd, sessionId: f.id, outputSnapshot: () => require('../main/pi-session/outputs').scan(f.cwd, 0, 0) };
+  const current = await packages.prepare(live, [item.metadata.artifactId]);
+  assert.deepEqual(versions.list(saved.archive), []);
+
+  // A later session can put a different file under the same name.
+  fs.writeFileSync(file, '# Replaced report');
+  const restored = await versions.pinLegacyDeliveries(f.profile, f.id, saved, f.guard);
+  const [original] = versions.list(restored.archive);
+  assert.match(original.turnId, /^legacy-archive:/);
+  const view = { sessionId: f.id, localReplica: true };
+  runtime.bindTurnArchives(view, () => versions.readers(f.profile, f.id, restored.archive, f.guard));
+  const frozen = await packages.prepare(view, ['version:' + original.versionId]);
+  assert.equal(frozen.bytes.toString(), '# Original report');
+  assert.equal(frozen.manifest.sessionId, current.manifest.sessionId);
+  assert.equal(frozen.manifest.revision, current.manifest.revision);
+  assert.equal(await versions.pinLegacyDeliveries(f.profile, f.id, restored, f.guard), restored);
+
+  const foreign = structuredClone(saved);
+  foreign.items[0].source.sessionId = 'different-chat';
+  assert.equal(await versions.pinLegacyDeliveries(f.profile, f.id, foreign, f.guard), foreign);
+  const imported = { ...saved, transferId: 'different-device' };
+  assert.equal(await versions.pinLegacyDeliveries(f.profile, f.id, imported, f.guard), imported);
+  const archiveRoot = storage.location(f.profile, f.id, restored.archive);
+  fs.writeFileSync(path.join(archiveRoot, name), '# Replacement archive');
+  await assert.rejects(packages.prepare(view, ['version:' + original.versionId]), /原件不可用/);
+});
+
 test('a Pi backup without turn receipts remains addressable after an empty or same-name replacement workspace', async t => {
   const f = fixture(t);
   async function capture(cwd, html, css, turnId, completed) {
@@ -123,10 +160,10 @@ test('a Pi backup without turn receipts remains addressable after an empty or sa
   const runtime = require('../main/conversation/artifact-runtime');
   const handle = { cwd, outputs: () => [] }, ref = 'reopened';
   t.after(() => runtime.closeRef(ref));
-  let saved = await versions.pinLegacyWebsites(f.profile, f.id, old, f.guard);
+  let saved = await versions.pinLegacyDeliveries(f.profile, f.id, old, f.guard);
   const [original] = versions.list(saved.archive);
   assert.match(original.turnId, /^pi-archive:/);
-  assert.equal(await versions.pinLegacyWebsites(f.profile, f.id, saved, f.guard), saved);
+  assert.equal(await versions.pinLegacyDeliveries(f.profile, f.id, saved, f.guard), saved);
   runtime.bindTurnArchives(handle, () => versions.readers(f.profile, f.id, saved.archive, f.guard));
   async function previewOriginal(id = 'version:' + original.versionId) {
     const result = await runtime.preview(handle, ref, id);
@@ -149,7 +186,7 @@ test('a Pi backup without turn receipts remains addressable after an empty or sa
   await previewOriginal(index.items.find(item => item.turnId === 'pi-history:first').artifactId);
   await previewOriginal();
   const changed = await capture(cwd, '<h1>replacement</h1>', '/* replacement */', 'new-turn', true);
-  saved = await storage.preserve(f.profile, f.id, changed, old, f.guard, { pinPiWebsites: true });
+  saved = await storage.preserve(f.profile, f.id, changed, old, f.guard, { pinLegacyDeliveries: true });
   await storage.retire(f.profile, f.id, old.archive, saved.archive, true);
   await previewOriginal();
   const newest = versions.list(saved.archive).find(item => item.relative === 'index.html' && item.turnId === 'new-turn');

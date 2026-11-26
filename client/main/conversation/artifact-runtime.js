@@ -124,7 +124,7 @@ async function viewSnapshotAsync(session) {
   const current = await appendArchivedItems(session, await snapshotAsync(session));
   if (!turnArchives.has(archiveSource(session)) || !current) return current;
   const archived = await turnArtifacts(session);
-  const provisional = file => file.turnId.startsWith('pi-archive:');
+  const provisional = file => /^(?:legacy|pi)-archive:/.test(file.turnId);
   const revision = file => JSON.stringify([file.relative, file.at, file.versionHash]);
   // A later native replay can identify the turn that produced a previously
   // unassigned backup. Keep issued IDs readable, but show that revision once.
@@ -250,7 +250,7 @@ function sessionSnapshot(session, scanned, recovered, candidates) {
     const existing = items.findIndex(row => row.path && path.resolve(row.path) === file.path);
     const previous = existing >= 0 ? items[existing] : null;
     const item = { ...file, ...previous, pluginDraft: true, pluginPackage: file.pluginPackage, skillPackage: file.skillPackage === true,
-      pluginName: file.pluginName, pluginVersion: file.pluginVersion,
+      pluginName: file.pluginName, pluginVersion: file.pluginVersion, pluginDeliveryPaths: file.pluginDeliveryPaths,
       // Identity/superseded come from this scan's merge, never from the row the
       // earlier snapshot cached here — a rename must move the identity forward.
       pluginIdentity: file.pluginIdentity || '', pluginSuperseded: file.pluginSuperseded === true,
@@ -356,6 +356,7 @@ function publicArtifact(ref, item) {
     changedInTurn: Boolean(item && item.changedInTurn),
     ...(item && item.pluginDraft ? { pluginDraft: true, pluginPackage: Boolean(item.pluginPackage), skillPackage: Boolean(item.skillPackage),
       pluginName: safeText(item.pluginName, 120), pluginVersion: safeText(item.pluginVersion, 40),
+      pluginDeliveryPaths: item.pluginDeliveryPaths,
       pluginIdentity: safeText(item.pluginIdentity, 160), pluginSuperseded: item.pluginSuperseded === true,
       pluginValidation: item.pluginValidation || { state: 'pending' },
       pluginInstallable: item.pluginValidation?.state === 'ready',

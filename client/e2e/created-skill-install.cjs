@@ -80,9 +80,9 @@ if (typeof electron === 'string') {
     const cwd = path.join(root, 'workspaces', skillChat);
     const relative = JSON.parse(fs.readFileSync(path.join(root, 'package-location.json'), 'utf8'));
     const packagePath = path.join(cwd, relative);
-    const row = { path: packagePath, artifactId: 'created-skill', relative };
+    const originalBytes = fs.readFileSync(packagePath);
     const handle = { ref: 'live-created-skill', cwd, sessionId: skillChat, inFlight: () => false,
-      outputSnapshot: () => ({ files: [row], delivery: { items: [row] } }) };
+      outputSnapshot: () => require('../main/pi-session/outputs').scan(cwd, 0, 1) };
     assert.match(packagePath, /\.skill$/);
     const artifact = require('../main/conversation/artifact-runtime').snapshot(handle).items.find(item => item.path === packagePath);
     assert.equal(artifact.pluginDraft, true, 'The generated skill must expose a conversation install action');
@@ -178,6 +178,7 @@ if (typeof electron === 'string') {
       const delivery = document.getElementById('delivery'), message = delivery.innerHTML;
       window.showDelivery = async (ref, snapshot) => {
         const files = await ChatOutputLinks.load(soduWorkAPI.conversationSession, ref, [], []);
+        window.indexedFiles = files;
         delivery.innerHTML = ChatOutputLinks.decorate(message, files, ref, snapshot);
         return delivery.querySelectorAll('[data-install-plugin-draft]').length;
       };
@@ -187,30 +188,66 @@ if (typeof electron === 'string') {
       };
     })()`);
     assert.equal(await activate(skillChat), 1, 'A cold history view must restore the actionable skill card');
-    async function expectSkillExports() {
-      const groups = await js(`[...document.querySelectorAll('#delivery .ndelivery-files')].map(group =>
-        [...group.querySelectorAll('[data-open-app]')].map(button => ({
-          name: button.querySelector('[data-user-content]').textContent, id: button.dataset.openApp
-        })))`);
-      assert.equal(groups.length, 1, 'All five exports from the same turn belong in one results list');
-      assert.equal(new Set(groups[0].map(file => file.id)).size, 5);
-      for (const file of groups[0]) {
-        const resolved = await require('../main/conversation/artifact-runtime').action(current, current.ref, file.id, 'location');
-        assert.equal(resolved.ok, true);
-        assert.equal(path.relative(cwd, resolved.path).split(path.sep).join('/'), file.name);
-        assert.equal(fs.readFileSync(resolved.path).readUInt32LE(), 0x04034b50);
-      }
-      assert.deepEqual(groups[0].map(file => file.name).sort(), ['claude.zip', 'codex.zip', 'copilot.zip', 'portable.zip', 'soduwork.skill']
+    async function expectSkillInstallCard() {
+      assert.equal(await js("document.querySelectorAll('#delivery .nplugin-draft').length"), 1);
+      assert.equal(await js("document.querySelectorAll('#delivery .ndelivery').length"), 0);
+      const exports = await js("indexedFiles.filter(file => file.relative?.startsWith('delivery/') && /[.](?:skill|zip)$/.test(file.relative)).map(file => file.relative)");
+      assert.deepEqual([...new Set(exports)].sort(), ['claude.zip', 'codex.zip', 'copilot.zip', 'portable.zip', 'soduwork.skill']
         .map(suffix => 'delivery/' + name + '-1.0.0-' + suffix));
     }
-    await expectSkillExports();
+    await expectSkillInstallCard();
+    // Older Pi sessions can combine live install metadata, frozen source files
+    // and unversioned platform ZIPs. The ordinary outputs still belong to their turns.
+    const mixed = await js(`(() => {
+      const draft = indexedFiles.find(file => file.pluginDraft && file.skillPackage);
+      const source = indexedFiles.find(file => file.relative === '${name}/SKILL.md');
+      const copy = (file, turnId, index) => ({ ...file, artifactId: 'version:' + turnId + ':' + file.artifactId,
+        originalArtifactId: file.artifactId, versionId: turnId + file.artifactId, turnId, userMessageIndex: index });
+      const prior = copy(source, 'draft-doc', 0), current = copy(source, 'create-skill', 2);
+      const report = { ...current, name: 'report.pdf', kind: 'pdf', relative: 'report.pdf', title: 'Report',
+        versionId: 'independent', artifactId: 'version:independent', originalArtifactId: 'independent' };
+      const files = [...indexedFiles, prior, current, report];
+      const html = [1, 3].map(i => '<div class="nmsg ai" data-chat-node="message:' + i +
+        '" data-delivery-final="true"><p>' + (i === 3 ? '<code>' + draft.relative + '</code>' : 'Documentation') + '</p></div>').join('');
+      const snapshot = { status: 'idle', localReplica: true, messages: [
+        { role: 'user', sentAt: 1, submissionId: 'draft-doc' }, { role: 'assistant', done: true, completedAt: 2 },
+        { role: 'user', sentAt: 3, submissionId: 'create-skill' }, { role: 'assistant', done: true, completedAt: draft.at + 1000 }] };
+      const view = document.createElement('div');
+      view.innerHTML = ChatOutputLinks.decorate(html, files, 'mixed-skill-fixture', snapshot);
+      return { installs: view.querySelectorAll('[data-install-plugin-draft]').length,
+        results: [...view.querySelectorAll('.ndelivery')].map(card =>
+          [card.closest('.nmsg')?.dataset.chatNode, card.querySelector('[data-open-app]')?.dataset.openApp]),
+        prior: prior.artifactId };
+    })()`);
+    assert.equal(mixed.installs, 1);
+    assert.deepEqual(mixed.results.sort(), [['message:1', mixed.prior], ['message:3', 'version:independent']]);
+    report.cases.push('A historical skill hides versioned sources and legacy exports while earlier and independent results remain on their turns');
+    const carried = await js(`(() => {
+      const draft = indexedFiles.find(file => file.skillPackage && file.pluginDraft);
+      const source = { ...indexedFiles.find(file => file.relative === '${name}/SKILL.md'), primary: true, changedInTurn: true };
+      const pdf = { ...source, artifactId: 'report', relative: 'report.pdf', name: 'report.pdf', title: 'Report' };
+      const messages = [{ role: 'user', sentAt: draft.at - 100 }, { role: 'assistant', done: true, completedAt: draft.at + 100 }];
+      const html = current => '<div class="nmsg ai" data-chat-node="message:1" data-delivery-final="true" data-delivery-current="' + current + '">Done</div>';
+      const previous = document.createElement('div'), next = document.createElement('div');
+      previous.innerHTML = ChatOutputLinks.decorate(html(true), [source, pdf], 'pending-install', { messages });
+      const before = previous.querySelector('.ndelivery [data-delivery-title]').textContent;
+      next.innerHTML = ChatOutputLinks.decorate(html(false) + '<div class="nmsg ai" data-chat-node="message:3" data-delivery-final="true">Hello</div>',
+        [draft, { ...source, changedInTurn: false }, { ...pdf, changedInTurn: false }], 'pending-install', { messages: [...messages,
+        { role: 'user', sentAt: draft.at + 200 }, { role: 'assistant', done: true, completedAt: draft.at + 300 }] }, previous);
+      return { before, installs: next.querySelectorAll('[data-install-plugin-draft]').length,
+        remaining: [...next.querySelectorAll('.ndelivery')].map(card => [card.closest('.nmsg')?.dataset.chatNode, card.querySelector('[data-delivery-title]')?.textContent]) };
+    })()`);
+    assert.match(carried.before, /[.]zip$/);
+    assert.equal(carried.installs, 1);
+    assert.deepEqual(carried.remaining, [['message:1', 'Report']]);
+    report.cases.push('Late install metadata replaces a carried ZIP with the install card and the independent report');
     const firstRef = current.ref;
     const firstId = await js(`document.querySelector('[data-install-plugin-draft]').dataset.installPluginDraft`);
     assert.equal(await activate(otherChat), 0, 'Switching chats must remove the former skill card');
     assert.equal(await js(`soduWorkAPI.conversationSession.pluginDraft(${JSON.stringify(firstRef)}, ${JSON.stringify(firstId)}).then(row => row.ok)`), false);
     assert.equal(await activate(skillChat), 1, 'Returning to the chat must rebuild the skill card');
-    await expectSkillExports();
-    report.cases.push('Cold reopen and switching back show one install card and one list with all five distinct platform exports');
+    await expectSkillInstallCard();
+    report.cases.push('Cold reopen and switching back show only the skill install card; all five packages remain indexed');
     assert.notEqual(current.ref, firstRef);
     assert.equal(await js(`document.querySelector('[data-install-plugin-draft]').dataset.pluginDraftRef`), current.ref);
     report.cases.push('A second Electron process restores the skill action from SQLite and rebinds it after switching chats');
@@ -262,6 +299,7 @@ if (typeof electron === 'string') {
     assert.equal((await request('/skills/' + name + '/details')).checksum, details.checksum);
     report.cases.push('A disabled identical skill stays installed without mutations and can be re-enabled from the Skills tab');
     assert.equal(await activate(handle.ref), 1, 'The live conversation must also expose its installation action');
+    await expectSkillInstallCard();
     references += 'Compare the result against the original before returning it.\n';
     fs.writeFileSync(path.join(source, 'references/rules.md'), references);
     const replacementDelivery = path.join(root, 'replacement-delivery');
@@ -285,8 +323,13 @@ if (typeof electron === 'string') {
     const prepared = await js(`soduWorkAPI.sendFixture({ text: 'Apply the supplied rules', skills: [${JSON.stringify(name)}] })`);
     assert.equal(prepared.pi && prepared.runner, true);
     report.cases.push('Fresh account authorization and immutable synchronization prepare the current SKILL.md and replacement reference for Pi and Runner');
-    assert.equal(await activate(skillChat), 0, 'Replacing the package must invalidate the original historical installation action');
-    report.cases.push('The original history receipt refuses the changed package while its live replacement remains installable');
+    assert.equal(await activate(skillChat), 1, 'The historical installation card must use its archived package');
+    const historical = await js(`(() => { const button = document.querySelector('[data-install-plugin-draft]');
+      return soduWorkAPI.conversationSession.pluginDraft(button.dataset.pluginDraftRef, button.dataset.installPluginDraft); })()`);
+    assert.equal(historical.ok, true);
+    assert.deepEqual(Buffer.from(historical.skillPackage.base64, 'base64'), originalBytes);
+    assert.notDeepEqual(originalBytes, fs.readFileSync(packagePath));
+    report.cases.push('The original history card reads the exact archived package after the live workspace changes');
     await require('./fixtures/created-plugin-history.cjs').verify({ app, root, activate, click, js, until, report });
     report.mutations = await mutations();
     assert.deepEqual(report.mutations, { imports: 2, selections: 2 });

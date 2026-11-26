@@ -227,7 +227,7 @@
     // Legacy files without a recorded turn may have only a verified session
     // copy. Attribute a unique reference within the restored transcript, never
     // a reference from the new execution segment or an incomplete page.
-    const unassigned = files.filter(file => file.versionId && file.turnId?.startsWith('pi-archive:') &&
+    const unassigned = files.filter(file => file.versionId && /^(?:legacy|pi)-archive:/.test(file.turnId) &&
       !Number.isSafeInteger(file.userMessageIndex));
     if (!unassigned.length || !replies.length || root.querySelector('[data-load-older]') || snapshot.historyRecovery?.incomplete ||
         snapshot.history?.truncated || snapshot.history?.messageStart > 0 ||
@@ -641,6 +641,12 @@
             if (captured.length) return captured.length === 1 ? captured[0] : null;
             const previews = images.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn && file.previewOf === relative);
             if (previews.length) return previews.length === 1 ? previews[0] : null;
+            // Some archived replies named the delivered HTML in an image declaration.
+            // Without a recorded screenshot, the verified page can still open in the workbench.
+            if (historyMedia && /\.html?$/i.test(relative)) {
+              const page = workspaceFileTarget(relative, available);
+              if (page?.artifactId && !page.deleted) return page;
+            }
             return originals.length === 1 ? originals[0] : null;
           });
           if (!historyMedia && entries.every(file => !file)) return;
@@ -650,6 +656,10 @@
           group.dataset.chatMedia = JSON.stringify([ref, global.SoduWorkAPI?.taskStorageKey?.('ops'), declaration.paths,
             entries.map(file => file ? [key(file), file.at, file.size] : historyImagesLoading ? 'loading' : null)]);
           entries.forEach((file, i) => {
+            if (file && !isImage(file)) {
+              group.append(button(doc, file, declaration.paths[i]));
+              return;
+            }
             if (file) {
               const preview = declaration.type === 'image' && shown.has(key(file)) ? button(doc, file, file.name) : imageCard(doc, file, ref);
               shown.add(key(file));
