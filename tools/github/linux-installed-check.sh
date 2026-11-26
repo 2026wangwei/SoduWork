@@ -28,9 +28,18 @@ if [ "$phase" = prepare ]; then
   if command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o Acquire::Retries=2 -o APT::Update::Error-Mode=any update
-    if [ "$kind" = deb ]; then apt-get install -y --no-install-recommends "$package"
+    # An Ubuntu mirror can rotate a package between index refresh and download.
+    # Retry only the download phase so installation failures still fail acceptance.
+    apt_install() {
+      if ! apt-get -o Acquire::Retries=2 --download-only install -y --no-install-recommends "$@"; then
+        sleep 5
+        apt-get -o Acquire::http::No-Cache=true -o Acquire::Retries=2 -o APT::Update::Error-Mode=any update
+      fi
+      apt-get -o Acquire::Retries=2 install -y --no-install-recommends "$@"
+    }
+    if [ "$kind" = deb ]; then apt_install "$package"
     else
-      apt-get install -y --no-install-recommends libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0 libgbm1 libasound2
+      apt_install libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0 libgbm1 libasound2
     fi
   else
     # A fresh system must reject an unknown signing key. Then explicitly trust
@@ -65,7 +74,7 @@ if [ "$phase" = prepare ]; then
     else rpm -q libsecret > /dev/null; fi
   fi
   if command -v apt-get >/dev/null; then
-    apt-get install -y --no-install-recommends xvfb xauth dbus-x11 gnome-keyring fonts-noto-cjk procps util-linux
+    apt_install xvfb xauth dbus-x11 gnome-keyring fonts-noto-cjk procps util-linux
   else dnf install -y xorg-x11-server-Xvfb xorg-x11-xauth dbus-x11 gnome-keyring google-noto-sans-cjk-ttc-fonts procps-ng util-linux; fi
   useradd -m -o -u "${SODUWORK_ACCEPT_UID:-12001}" acceptance
   mkdir -p "$profile"

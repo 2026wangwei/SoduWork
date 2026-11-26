@@ -75,7 +75,11 @@ function classify(root, files, window, snapshot, executionCwd) {
     const manifest = path.join(root, contract.MANIFEST_RELATIVE);
     assertNoLinks(root, manifest);
     const stat = fs.lstatSync(manifest, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || !during(stat, manifestWindow)) throw Error('Unverified delivery manifest');
+    // A verified turn already proves every candidate's bytes through its journal.
+    // An in-place manifest rewrite can retain an older ctime on Windows.
+    const modified = Number(stat.mtimeNs) / 1e6;
+    const current = window ? during(stat, window) : modified >= start && modified <= manifestWindow.end;
+    if (!stat.isFile() || stat.nlink !== 1n || !current) throw Error('Unverified delivery manifest');
     const verified = require('./metadata-snapshot.cjs').read(root, manifest, { maxBytes: 256 * 1024 });
     if (!versions.same(versions.stamp(stat), versions.stamp(verified.stat))) throw Error('Delivery manifest changed');
     const parsed = JSON.parse(verified.bytes);
@@ -95,7 +99,7 @@ function classify(root, files, window, snapshot, executionCwd) {
   } catch (_) { /* Legacy workspaces may have no manifest. */ }
   if (!primary) {
     primary = new Map(contract.infer(files, root).items.map(file => [file.relative, file]));
-    if (wantsCaptures && references.linked.size) {
+    if (references?.linked.size) {
       const nominated = contract.fromReply(root, snapshot, { files: files.map(file => ({ ...file, changedInTurn: true })) }, references);
       for (const file of nominated.delivery?.items || []) {
         if (file.kind === 'image') primary.set(file.relative, file);
