@@ -23,6 +23,16 @@ function parseJson(bytes) {
   return JSON.parse(String(bytes).replace(/^\uFEFF/, ''));
 }
 
+// Include embedded members as display metadata only. The external-resource
+// reader still verifies each loose dependency before using its bytes.
+function packageMembers(rows) {
+  if (!Array.isArray(rows) || rows.length > resources.MAX_FILES) return [];
+  return rows.flatMap(row => {
+    try { return [resources.resourcePath(row?.path)]; }
+    catch (_) { return []; }
+  });
+}
+
 function metadata(file, bytes, digest, archive) {
   const key = file + ':' + digest;
   if (metadataCache.has(key)) return metadataCache.get(key);
@@ -31,7 +41,7 @@ function metadata(file, bytes, digest, archive) {
     try {
       if (SKILL_ARCHIVE.test(file)) {
         const skill = skillPackages.read(bytes);
-        body = { name: skill.name, key: skill.name, skillPackage: true };
+        body = { name: skill.name, key: skill.name, skillPackage: true, members: skill.members };
       } else {
         const parsed = archive
           ? require('../plugin-package-reader.cjs').readPersonalArchive(bytes)
@@ -40,6 +50,7 @@ function metadata(file, bytes, digest, archive) {
           // Cache discovery metadata only, never the potentially large embedded resources.
           body = Object.fromEntries(['name', 'key', 'version', 'template', 'description', 'instructions']
             .map(key => [key, typeof parsed[key] === 'string' ? parsed[key].slice(0, 256) : '']));
+          body.packageMembers = packageMembers(parsed.resources);
           body.resourcePaths = !archive && Array.isArray(parsed.resources) && parsed.resources.length <= resources.MAX_FILES
             ? parsed.resources.filter(item => item && !Object.hasOwn(item, 'content')).map(item => item.path).filter(value => typeof value === 'string' && value.length <= 240) : [];
           const skill = skillPackages.legacy(parsed, undefined, archive ? bytes : undefined);
@@ -105,10 +116,12 @@ function describe(cwd, file) {
   const body = metadata(target, bytes, digest, archive);
   if (!canonical && !archive && !skillArchive && !(body && ['method', 'connector', 'workflow'].includes(body.template) &&
       ['name', 'description', 'instructions'].every(key => typeof body[key] === 'string' && body[key].trim()))) return null;
-  return { ...file, path: target, name, fileIdentity,
-    relative: path.relative(cwd, target).split(path.sep).join('/'),
+  const relative = path.relative(cwd, target).split(path.sep).join('/');
+  return { ...file, path: target, name, fileIdentity, relative,
     size: stat.size, at: file.at == null ? Math.round(stat.mtimeMs) : file.at,
     ...revision(cwd, target, digest, body, file.at == null ? Math.round(stat.mtimeMs) : file.at),
+    pluginDeliveryPaths: body?.members ? skillPackages.deliveryPaths(relative, body)
+      : (body?.packageMembers || []).map(member => path.posix.join(path.posix.dirname(relative), member)),
     pluginDraft: true, pluginPackage: archive, skillPackage: skillArchive || body?.skillPackage === true,
     pluginName: body && typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '',
     pluginKey: body && typeof body.key === 'string' ? body.key.trim().slice(0, 64) : '',
@@ -241,13 +254,13 @@ function mergePluginCandidates(rows) {
   const kept = [];
   byDir.forEach(group => {
     kept.push(...group.manifests);
-    const manifestKeys = new Set(group.manifests.map(row => row.pluginKey).filter(Boolean));
-    const manifestSlugs = new Set(group.manifests.map(row => slugName(row.pluginName)).filter(Boolean));
     group.packages.forEach(row => {
       const slug = packageSlug(row);
       // Stable package metadata takes precedence over display names or filenames.
       // Keep the filename fallback for legacy/unreadable archives only.
-      const matched = row.pluginKey ? manifestKeys.has(row.pluginKey) : slug && manifestSlugs.has(slug);
+      const matched = group.manifests.find(manifest => row.pluginKey ? manifest.pluginKey === row.pluginKey :
+        slug && slugName(manifest.pluginName) === slug);
+      if (matched && row.relative) matched.pluginDeliveryPaths = [...new Set([...(matched.pluginDeliveryPaths || []), row.relative])];
       if (!matched) kept.push(row);
     });
   });

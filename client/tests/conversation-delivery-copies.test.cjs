@@ -13,6 +13,30 @@ const packages = require('../main/conversation/delivery-package-worker');
 const { create: createHistory } = require('../main/conversation/shared-history.cjs');
 const { identity } = require('./helpers/platform-session-fixture.cjs');
 
+test('live delivery link checks share the output I/O limit and resolve each website once', async t => {
+  const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-links-')));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const workspace = workspaces.allocate(cwd), draft = workspaces.ensure(cwd, workspace);
+  const items = Array.from({ length: 40 }, (_, i) => {
+    const name = i + '.html';
+    return { artifactId: name, kind: 'website', relative: name, path: path.join(draft, name) };
+  });
+  const missing = items.pop();
+  await Promise.all(items.map(item => fs.writeFile(item.path, item.relative)));
+  let active = 0, high = 0, count = 0;
+  const realpath = fs.realpath;
+  t.mock.method(fs, 'realpath', async (...args) => {
+    count++; high = Math.max(high, ++active);
+    try { await new Promise(resolve => setImmediate(resolve)); return await realpath(...args); }
+    finally { active--; }
+  });
+  const artifacts = await runtime.decorateForSharing('bounded-links', { items: [...items, missing] }, { cwd, deliveryWorkspace: workspace });
+  assert.equal(count, artifacts.length);
+  assert.ok(high > 1 && high <= 16);
+  assert.ok(artifacts.slice(0, -1).every(item => item.deliveryRelativePath === '.soduwork-drafts/' + workspace.key + '/' + item.relative));
+  assert.equal(artifacts.at(-1).deliveryRelativePath, undefined);
+});
+
 test('overlapping desktop chats retain separate turn originals, exported copies and restart downloads', async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-overlapping-artifacts-')));
   const cwd = path.join(root, 'project'), profile = path.join(root, 'profile');
@@ -67,6 +91,23 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
   const native = await handoff.artifactSession(a.handle);
   const live = (await runtime.viewSnapshotAsync(a.handle)).items.find(item => item.turnId === 'a-first');
   assert.equal((await packages.prepare(native, [live.artifactId])).bytes.toString(), 'A1');
+  const scanning = { cwd, deliveryWorkspace: a.handle.deliveryWorkspace,
+    outputSnapshot: () => require('../main/pi-session/outputs').scan(a.draft, 0, 1) };
+  const index = await runtime.viewSnapshotAsync(scanning);
+  const report = index.items.find(item => item.relative === 'report.md');
+  const publicReport = async items => (await runtime.decorateForSharing('one', { items }, scanning))[0];
+  const link = '.soduwork-drafts/' + scanning.deliveryWorkspace.key + '/report.md';
+  assert.equal((await publicReport([report])).deliveryRelativePath, link);
+  assert.equal((await publicReport([{ ...report, path: path.join(b.draft, 'report.md'), deliveryRelativePath: link }])).deliveryRelativePath, undefined);
+  // Older versions stored the host's original root and stamps without a per-file key.
+  const { digest, savedAt, ...legacy } = await history.store.deviceHistory('two');
+  for (const item of [...legacy.localArtifactHistory.items, ...legacy.localArtifactHistory.archive.versions]) {
+    assert.equal(item.source.deliveryWorkspaceKey, b.handle.deliveryWorkspace.key);
+    delete item.source.deliveryWorkspaceKey;
+  }
+  const legacyRow = await history.store.get('two');
+  assert.equal((await history.store.saveDeviceHistory('two', legacy, { expectedRevision: legacyRow.replicaRevision,
+    expectedHistoryDigest: digest })).ok, true);
   await history.close();
   await fs.rm(cwd, { recursive: true });
   history = openHistory();
@@ -81,7 +122,18 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
     const view = bridge.attachView(reader, { historyPreview: true });
     // The artifact IPC indexes the native source. The right workbench looks up
     // the registered facade by ref, even when the writable chat is still open.
-    const listed = await runtime.viewSnapshotAsync(await handoff.artifactSession(bridge.get(view.ref)));
+    const source = await handoff.artifactSession(bridge.get(view.ref));
+    const listed = await runtime.viewSnapshotAsync(source);
+    const publicItems = runtime.decorate(view.ref, listed, source);
+    for (const item of publicItems.filter(file => file.relative === 'report.md'))
+      assert.equal(item.deliveryRelativePath, '.soduwork-drafts/' + row.deliveryWorkspaceKey + '/report.md');
+    if (id === 'two') {
+      const old = listed.items.find(file => file.relative === 'report.md' && file.versionId);
+      const link = workspaces.historyLinks(row, body.localArtifactHistory);
+      assert.equal(link({ ...old, versionHash: 'different revision' }), undefined);
+      assert.equal(link({ ...old, historicalSource: { ...old.historicalSource, sessionId: 'one' } }), undefined);
+      assert.equal(workspaces.historyLinks({ ...row, deliveryWorkspaceKey: a.handle.deliveryWorkspace.key }, body.localArtifactHistory)(old), undefined);
+    }
     const canvas = await workbench.project(bridge.get(view.ref));
     assert.notEqual(canvas, reader);
     for (const [index, expected] of outputs.entries()) {

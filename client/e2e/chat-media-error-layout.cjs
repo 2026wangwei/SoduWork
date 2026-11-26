@@ -114,6 +114,34 @@ if (typeof electron === 'string') {
     assert.equal(await run('list.scrollWidth > list.clientWidth'), false);
     report.cases.push({ narrowGallery: gallery });
     await run(fs.readFileSync(path.join(client, 'components/panels/chat-deliveries.js'), 'utf8') + '\nvoid 0;');
+    const staged = await run(`(() => {
+      const root = '.soduwork-drafts/20a6cb86-e678-4633-8a27-916226538839/';
+      const name = '春天的短文.txt', path = root + '写作/' + name;
+      const archive = '原稿.tar.gz';
+      const reply = '<p>已完成：' + path + '，备份 ' + root + archive + '。</p>' +
+        '<p><a href="' + encodeURI(path) + '">阅读正文</a> <code>' + path.replace('20a6', '30a6') + '</code></p>' +
+        '<pre><code>' + path + '</code></pre>';
+      const html = ChatOutputLinks.presentDeliveryPaths(reply);
+      list.innerHTML = '<div class="nmsg ai" data-output-task=""><div class="ntext">' + html + '</div></div>';
+      const files = [{ artifactId: 'draft', name, relative: '写作/' + name, deliveryRelativePath: path },
+        { artifactId: 'backup', name: archive, relative: archive, deliveryRelativePath: root + archive }];
+      const before = list.querySelector('p').textContent;
+      const edge = document.createElement('div');
+      edge.innerHTML = ChatOutputLinks.presentDeliveryPaths('<p>已存到 ' + root + '，文件见 ' + path +
+        '和其他文件。' + root + 'README 和 ' + path + '。</p><code>cat ' + path + '</code>');
+      const retainsCommand = edge.querySelector('code').textContent === 'cat ' + path;
+      const prose = edge.querySelector('p').textContent;
+      ChatOutputLinks.linkify(list, files);
+      const partial = document.createElement('p');
+      partial.innerHTML = ChatOutputLinks.presentDeliveryPaths('<code>' + root.slice(0, -4) + '</code>', true);
+      return { before, retainsCommand, prose, buttons: [...list.querySelectorAll('button')].map(b => [b.textContent, b.dataset.openApp]),
+        foreign: list.querySelector('p code').textContent, example: list.querySelector('pre').textContent === path,
+        loading: partial.textContent };
+    })()`);
+    assert.deepEqual(staged, { before: '已完成：春天的短文.txt，备份 原稿.tar.gz。', retainsCommand: true,
+      prose: '已存到 成果目录，文件见 春天的短文.txt和其他文件。README 和 春天的短文.txt。',
+      buttons: [['春天的短文.txt', 'draft'], ['原稿.tar.gz', 'backup'], ['阅读正文', 'draft']],
+      foreign: '春天的短文.txt', example: true, loading: '…' });
     await run(`window.SoduWorkI18n = undefined;
       window.historyFiles = [
         { artifactId: 'final', name: 'index.html', relative: 'index.html', primary: true },
@@ -121,11 +149,11 @@ if (typeof electron === 'string') {
         ...['shots/menu.png', 'shots/fight.png', 'other/lost.png', 'old/ko.png', 'old/ko.png'].map((relative, i) =>
           ({ artifactId: 's' + i, relative, name: relative.split('/').pop(), primary: false, processEvidence: true }))
       ];
-      window.paintHistory = (files, urls, historyImagesLoading = false) => {
+      window.paintHistory = (files, urls, historyImagesLoading = false, messages = []) => {
         const md = '<div class="nmd"><p>Open <code>index.html</code></p><pre><code class="language-soduwork-media">' +
           JSON.stringify({ type: 'gallery', items: urls.map(url => ({ url })) }) + '</code></pre></div>';
-        list.innerHTML = ChatOutputLinks.decorate('<div class="nmsg ai" data-delivery-final="true">' +
-          ChatMedia.prepare(md, 'history') + '</div>', files, 'history', { localReplica: true, status: 'idle', historyImagesLoading });
+        list.innerHTML = ChatOutputLinks.decorate('<div class="nmsg ai" data-chat-node="message:1" data-output-task="" data-delivery-final="true">' +
+          ChatMedia.prepare(md, 'history') + '</div>', files, 'history', { localReplica: true, status: 'idle', historyImagesLoading, messages });
       };
       window.historyReads = [];
       paintHistory(historyFiles, ['shots/menu.png', './shots/fight.png', 'shots/lost.png', 'old/ko.png']);
@@ -150,6 +178,12 @@ if (typeof electron === 'string') {
     assert.notEqual(await run('list.querySelector("[data-chat-media]").dataset.chatMedia'), loadingMedia);
     assert.equal(await run('list.querySelector(".nmd [role=status]").textContent'), '图片暂时无法预览 · shots/lost.png');
     assert.equal(await run('list.querySelectorAll("button,img,a").length'), 0);
+    await run(`paintHistory(historyFiles, ['index.html', 'absent/index.html']); void 0;`);
+    assert.equal(await run('list.querySelectorAll(".noutput-gallery [data-open-app]").length'), 0, 'a live same-name page cannot stand in for historical bytes');
+    await run(`paintHistory([{ ...historyFiles[0], versionId: 'frozen', turnId: 'source', userMessageIndex: 0 }],
+      ['index.html', 'absent/index.html'], false, [{ role: 'user', submissionId: 'source' }, { role: 'assistant' }]); void 0;`);
+    assert.deepEqual(await run(`Array.from(list.querySelectorAll('.noutput-gallery [data-open-app]'), node => node.dataset.openApp)`), ['final']);
+    assert.equal(await run('list.querySelector(".noutput-gallery [role=status]").textContent'), '图片暂时无法预览 · absent/index.html');
     await run(`paintHistory(historyFiles, ['shots/menu.png', '../shots/fight.png']); void 0;`);
     assert.equal(await run('Boolean(list.querySelector("pre code")) && !list.querySelector("img")'), true);
     report.cases.push({ historyGallery: 'two decoded screenshots, two unavailable entries, one message output and one session output' });

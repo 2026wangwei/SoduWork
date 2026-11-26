@@ -461,6 +461,7 @@ test('end-to-end: real archive beside a real manifest is merged before the rende
     'same-directory package never reaches the item set as its own draft');
   const shown = publicDraft(handle(cwd));
   assert.ok(shown);
+  assert.ok(shown.pluginDeliveryPaths.includes(path.basename(packaged)));
   assert.equal(shown.pluginIdentity, 'key:' + body.key);
   assert.equal(shown.pluginSuperseded, false, 'public artifact carries an explicit, not-undefined flag');
 });

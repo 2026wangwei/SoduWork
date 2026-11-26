@@ -14,7 +14,7 @@ function read(root, relative, expected) {
 function inspect(root, files, skillRuntimeEntry) {
   const results = [];
   for (const { relative, stamp } of files) {
-    let verified, diagnostic, pluginKey = '';
+    let verified, diagnostic, skill;
     const issue = error => require('../pi-session/plugin-generation-gate.cjs').diagnostic({ relative }, error);
     try { verified = read(root, relative, stamp); }
     catch (error) {
@@ -23,11 +23,12 @@ function inspect(root, files, skillRuntimeEntry) {
     }
     const pluginRevision = candidates.revisionOf(verified ? [verified.revision] : stamp);
     if (verified) {
-      try { pluginKey = skills.read(verified.bytes, { skillRuntimeEntry }).name; }
+      try { skill = skills.read(verified.bytes, { skillRuntimeEntry }); }
       catch (error) { diagnostic = issue(error); }
     }
     results.push({ relative, pluginDraft: true, skillPackage: true, pluginPackage: false,
-      pluginKey, pluginName: pluginKey, pluginRevision, pluginManifestDigest: verified?.revision,
+      pluginKey: skill?.name || '', pluginName: skill?.name || '',
+      pluginDeliveryPaths: skill ? skills.deliveryPaths(relative, skill) : [], pluginRevision, pluginManifestDigest: verified?.revision,
       pluginValidation: { relative, revision: pluginRevision, state: diagnostic ? 'invalid' : 'ready', attempt: 0,
         ...(diagnostic ? { diagnostic } : {}) } });
   }

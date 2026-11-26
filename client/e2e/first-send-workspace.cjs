@@ -52,6 +52,39 @@ function configure(data) {
     data.splice(index,1); validation.discarded.push(id); return {ok:true};
   };
   api.firstSends = async () => ({ok:true,rows:structuredClone(data)});
+  let changed, releaseSend;
+  api.onFirstSendsChanged = notify => { changed = notify; return () => { changed = null; }; };
+  window.projectJournal = {
+    start() {
+      runtimes.push({ id: 'pi', displayName: 'Pi', modelMode: 'managed', accessControl: support });
+      api.startFirstSend = async request => {
+        const row = { intentId: request.intentId, attemptId: request.intentId, sessionId: '',
+          title: request.text, text: request.text, adapterId: request.open.adapterId || 'pi', at: Date.now(), status: 'opening',
+          sidebarProjectId: request.sidebarProjectId || '' };
+        data.unshift(row); this.row = row;
+        await changed?.();
+        return { ok: true, row: structuredClone(row) };
+      };
+      api.waitFirstSend = () => new Promise(resolve => { releaseSend = resolve; });
+      api.attachFirstSend = id => api.open({ chatId: data.find(row => row.intentId === id).sessionId });
+      api.firstSendAssociations = async () => ({ ok: true,
+        rows: data.filter(row => row.confirmed && row.sidebarProjectId).map(row => structuredClone(row)) });
+      api.ackFirstSendAssociations = async (id, sessionId) => {
+        const row = data.find(row => row.intentId === id && row.sessionId === sessionId);
+        if (!row?.confirmed) throw Error('Unexpected association acknowledgement');
+        row.sidebarProjectId = '';
+        return { ok: true };
+      };
+    },
+    async stage(status, sessionId) {
+      const row = this.row;
+      if (status === 'sending') row.sessionId = sessionId;
+      row.status = status; await changed();
+      if (row.sessionId) WorkspaceShell.upsertChat({ id: row.sessionId, title: row.title, at: row.at, count: 1 });
+      if (status === 'accepted') releaseSend?.({ ok: true, row: structuredClone(row) });
+    },
+    async confirm() { this.row.confirmed = true; await changed(); },
+  };
   api.history = async () => ({ok:true,chats:data.filter(row=>row.sessionId).map(row => ({id:row.sessionId,title:row.title,adapterId:'kimi',at:row.at,count:1}))});
   api.openApplication = async () => ({ok:true,handled:false});
   const snapshot = row => ({ status: 'unreachable', statusText: row.reason, messages: [{role:'user',text:row.text,sentAt:row.at}],
@@ -89,7 +122,7 @@ async function click(selector) {
   await until('document.querySelector(' + JSON.stringify(selector) + ')?.checkVisibility()');
   const point = await js(`(async()=>{const node=document.querySelector(${JSON.stringify(selector)});node.scrollIntoView({block:'nearest'});
     await new Promise(resolve=>requestAnimationFrame(resolve));const r=node.getBoundingClientRect();
-    const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);if(!node.contains(document.elementFromPoint(x,y)))throw Error('Occluded control');return{x,y};})()`);
+    const x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2);if(!node.contains(document.elementFromPoint(x,y)))throw Error('Occluded control: '+${JSON.stringify(selector)});return{x,y};})()`);
   for (const type of ['mouseDown','mouseUp']) win.webContents.sendInputEvent({type,...point,button:'left',clickCount:1});
 }
 async function shoot(name) {
@@ -97,6 +130,73 @@ async function shoot(name) {
   win.webContents.invalidate(); await delay(200);
   const file=path.join(out,name+'.png'); fs.writeFileSync(file,(await win.webContents.capturePage()).toPNG());
   report.screenshots.push(file);
+}
+async function projectFirstSend() {
+  const title = '核对目录首发归属', native = 'native-project-chat';
+  const byTitle = `[...document.querySelectorAll('.ws-chat')].filter(b => b.textContent.includes(${JSON.stringify(title)}))`;
+  async function createProject(name) {
+    await click('#wsProjectAdd'); await click('#wsProjectName'); await win.webContents.insertText(name);
+    await click('.ws-project-save'); await until('!document.querySelector(".ws-project-dialog[open]")');
+    return js(`[...document.querySelectorAll('.ws-project')].find(p=>p.querySelector('.ws-project-toggle').textContent.includes(${JSON.stringify(name)})).dataset.projectId`);
+  }
+  const project = await createProject('测试'), moved = await createProject('手动归档');
+  const group = id => `.ws-project[data-project-id="${id}"]`;
+  const journal = (status, id = native) => js(`projectJournal.stage(${JSON.stringify(status)},${JSON.stringify(id)})`);
+  const placement = (id, selector) => `${byTitle}.length === 1 && ${byTitle}[0].closest(${JSON.stringify(group(id))}) && ${byTitle}[0].matches(${JSON.stringify(selector)})`;
+  await js(`projectJournal.start(); window.recentFlashes = [];
+    const recent = document.querySelector('#wsChats');
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node.textContent?.includes(${JSON.stringify(title)})) recentFlashes.push('inserted project title in Recent');
+      }
+      if (recent.textContent.includes(${JSON.stringify(title)})) recentFlashes.push('painted project title in Recent');
+    }).observe(recent,{childList:true,subtree:true,characterData:true,attributes:true});
+    void 0;`);
+  await click(group(project) + ' .ws-project-create');
+  await click('#cpInput'); await win.webContents.insertText(title); await click('#cpGo');
+  await until('projectJournal.row');
+  assert.equal(await js('projectJournal.row.sidebarProjectId'), project);
+  await until(placement(project, '[data-first-send]:not([data-first-send=""])'));
+  await shoot('05-project-before-session-id');
+  await journal('sending');
+  await until(placement(project, '[data-first-send-session="' + native + '"]'));
+  await click(group(project) + ' [data-first-send-session="' + native + '"]');
+  await until('NativeChat.sessionInfo()?.sessionId === ' + JSON.stringify(native) +
+    ' || document.querySelector("#cpChat [data-first-send-record]")');
+  await journal('accepted');
+  await until(placement(project, '[data-chat-id="' + native + '"]'));
+  assert.deepEqual(await js('recentFlashes'), []);
+  await shoot('06-project-accepted-before-association');
+  // A user move made before the delayed confirmation wins over the original target.
+  const activeRow = '.ws-chat-row:has([data-chat-id="' + native + '"])';
+  const hover = await js(`(() => { const r = document.querySelector(${JSON.stringify(activeRow)}).getBoundingClientRect();
+    return { x:Math.round(r.x + 10), y:Math.round(r.y + r.height / 2) }; })()`);
+  win.webContents.sendInputEvent({ type:'mouseMove', ...hover });
+  await click(activeRow + ' .ws-chat-more:not(.ws-first-send-discard)');
+  await click(activeRow + ' .ws-chat-move'); await click('[data-move-to="' + moved + '"]');
+  await until(placement(moved, '[data-chat-id="' + native + '"]'));
+  await js('projectJournal.confirm()');
+  await until('!projectJournal.row.sidebarProjectId');
+  assert.ok(await js(placement(moved, '[data-chat-id="' + native + '"]')));
+  // Read the persisted project state, independently of the live rendered groups.
+  const stored = await js(`WorkspaceSidebarState.create(WorkspaceSidebarState.accountOptions({storage:localStorage,api:SoduWorkAPI})).get().projects
+    .filter(p => p.chatIds.includes(${JSON.stringify(native)})).map(p => p.id)`);
+  assert.deepEqual(stored, [moved]);
+  assert.deepEqual(await js('recentFlashes'), []);
+  // Complete another first turn without moving it; the durable membership takes over.
+  await click(group(project) + ' .ws-project-create'); await click('#cpInput');
+  await win.webContents.insertText('确认目录持久归属'); await click('#cpGo');
+  await until('projectJournal.row.title === "确认目录持久归属"');
+  await journal('sending', 'native-confirmed'); await journal('accepted');
+  await js('projectJournal.confirm()'); await until('!projectJournal.row.sidebarProjectId');
+  assert.equal(await js(`document.querySelector(${JSON.stringify(group(project))}).querySelector('[data-chat-id="native-confirmed"]')?.textContent.includes("确认目录持久归属")`), true);
+  assert.ok(await js(`WorkspaceSidebarState.create(WorkspaceSidebarState.accountOptions({storage:localStorage,api:SoduWorkAPI})).get().projects
+    .find(p=>p.id === ${JSON.stringify(project)}).chatIds.includes('native-confirmed')`));
+  await click('.ws-new-chat [data-view="create"]');
+  await click('#cpInput'); await win.webContents.insertText('普通新会话'); await click('#cpGo');
+  await until('projectJournal.row.title === "普通新会话" && document.querySelector("#wsChats").textContent.includes("普通新会话")');
+  assert.equal(await js('projectJournal.row.sidebarProjectId'), '');
+  report.projectPlacement = 'Opening, sending and accepted in the clicked directory; no Recent flash; a manual move survives confirmation; ordinary chat in Recent.';
 }
 app.whenReady().then(async () => {
   fs.mkdirSync(out,{recursive:true});
@@ -167,6 +267,7 @@ app.whenReady().then(async () => {
   await until('validation.discarded.length===1 && !document.querySelector('+JSON.stringify(button(rows[3].intentId))+')');
   await until('document.querySelector("#cpInput")?.checkVisibility()');
   assert.equal(await js('document.querySelector('+JSON.stringify('.ws-chat-row:has('+unknown+') .ws-first-send-discard')+').hidden'),true);
+  await projectFirstSend();
   Object.assign(report,await js('validation'));
   assert.deepEqual(report.sends,[]); assert.equal(report.opened.includes('new'),false);
   const styleOrder=await js('[...document.querySelectorAll("link[rel=stylesheet]")].map(n=>n.getAttribute("href"))');

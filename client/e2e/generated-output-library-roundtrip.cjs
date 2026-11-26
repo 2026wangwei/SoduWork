@@ -41,6 +41,77 @@ if (typeof electron === 'string') {
     await delay(150);
   }
   const list = scope => js(`SoduWorkAPI.listLibrary({scope:${JSON.stringify(scope || 'recommended')}})`);
+  async function historicalSingleFile() {
+    const history = await require('./fixtures/legacy-pi-website.cjs').create(app, app.getPath('userData'), sessions);
+    const visibleActions = `[...messages.querySelectorAll('.ndelivery-actions button')].filter(b => b.checkVisibility()).map(b => b.title)`;
+    const folder = '打开所在位置';
+    async function captureCard(name) {
+      if (await js("soduWorkAPI.fileTypeIcon('html').then(result => result.ok)"))
+        await until("messages.querySelector('.ndelivery-icon img:not([hidden])')?.naturalWidth > 0");
+      const bounds = await js(`(() => { const card = messages.querySelector('.ndelivery'); card.scrollIntoView({block:'center'});
+        const r = card.getBoundingClientRect();
+        return { x:Math.floor(r.x), y:Math.floor(r.y), width:Math.ceil(r.width), height:Math.ceil(r.height) }; })()`);
+      fs.writeFileSync(path.join(out, name + '.png'), (await win.webContents.capturePage(bounds)).toPNG());
+    }
+    async function reopen() {
+      const handle = await history.preview(history.id);
+      sessions.set(handle.ref, handle);
+      const snapshot = handle.uiSnapshot();
+      const html = '<article class="nmsg ai" data-delivery-final="true"><div class="ntext"><code>index.html</code></div></article>';
+      await js(`(async () => {
+        window.ref=${JSON.stringify(handle.ref)};
+        const api=soduWorkAPI.conversationSession, snapshot=${JSON.stringify(snapshot)};
+        const files=await ChatOutputLinks.load(api,ref,[],[]);
+        window.paintHistory = () => {
+          messages.innerHTML=ChatOutputLinks.decorate(${JSON.stringify(html)},files,ref,snapshot);
+          ChatDeliveries.hydrate(messages,{ref,api,snapshot});
+        };
+        paintHistory();
+      })()`);
+      assert.equal(await js("messages.querySelectorAll('.ndelivery').length"), 1);
+      assert.equal(await js("messages.querySelector('.ndelivery [data-delivery-title]').textContent"), history.oldHeading);
+      assert.equal(await js("!!messages.querySelector('.ndelivery-files')?.checkVisibility()"), false);
+      assert.equal(await js("messages.querySelectorAll('.ndelivery [data-delivery-reveal]').length"), 1);
+      return handle;
+    }
+    try {
+      await js(read('components/panels/chat-output-links.js') + '\nvoid 0;');
+      const first = await reopen();
+      assert.deepEqual(await js(visibleActions), [folder, '保存到资料库']);
+      await captureCard('history-before-save');
+      await first.close(); sessions.delete(first.ref);
+      // Save through the original live session, then open the directory history with a fresh renderer cache and ref.
+      sessions.set(history.id, { cwd: history.cwd, sessionId: history.id, snapshot: () => ({ status: 'idle' }),
+        outputSnapshot: () => outputs.scan(history.cwd, 0, 1) });
+      await render(history.id);
+      const before = writes;
+      await click('[data-delivery-retry]');
+      await until("messages.querySelector('[data-delivery-retry]').classList.contains('is-saved')");
+      assert.equal(writes, before + 1);
+      await js(read('components/panels/chat-deliveries.js') + '\nvoid 0;');
+      await js(`const lookup=SoduWorkAPI.getLibraryDeliveryStatus;
+        SoduWorkAPI.getLibraryDeliveryStatus=async manifest=>{
+          const receipt=await lookup(manifest);
+          await new Promise(done=>window.finishLookup=done);
+          return receipt;
+        }; void 0;`);
+      const reopened = await reopen();
+      await until("typeof finishLookup === 'function'");
+      await js('paintHistory(); SoduWorkAPI.getLibraryDeliveryStatus=lookup; finishLookup(); void 0;');
+      await until("messages.querySelector('[data-delivery-open]')?.checkVisibility()");
+      assert.deepEqual(await js(visibleActions), [folder, '已保存到资料库，点击查看', '预览已保存版本']);
+      await captureCard('history-after-save');
+      const saved = (await list()).items.find(item => item.sessionId === history.id);
+      assert.ok(saved);
+      await assertBytes(saved, fs.readFileSync(path.join(history.cwd, 'index.html')));
+      await click('[data-delivery-retry]');
+      await until(`document.querySelector('[data-library-select="${saved.id}"]')`);
+      assert.equal(writes, before + 1);
+      await js('closeLibraryPanel();void 0;');
+      await reopened.close(); sessions.delete(reopened.ref);
+      report.cases.push('Directory history restores the compact unsaved HTML card and the exact live library receipt after reopening');
+    } finally { await history.close(); }
+  }
   async function assertBytes(item, expected) {
     const bytes = await js(`(async()=>Array.from(new Uint8Array(await (await SoduWorkAPI.readLibraryBinary(${JSON.stringify(item.id)})).blob.arrayBuffer())))()`);
     assert.deepEqual(Buffer.from(bytes), expected);
@@ -52,10 +123,11 @@ if (typeof electron === 'string') {
     for (const [name, handler] of Object.entries({
       'hub-connection-info': () => ({ hub: 'http://127.0.0.1:1', internalTest: true, editable: false }),
       'app-version': () => 'isolated-output-save', 'sys-info': () => ({ platform: process.platform }),
-      'work-root-default': () => path.join(root, 'library-workspace'), 'file-type-icon': () => ({ ok: false }), 'runner-configure': () => ({ ok: true }),
+      'work-root-default': () => path.join(root, 'library-workspace'), 'runner-configure': () => ({ ok: true }),
       'device-auth-bootstrap': () => ({ ok: true, stored: true, clientId: 'fixture', user: { id: 'alice' }, session: 'fixture-session', expiresIn: 3600 }),
       'pi-session-read-output-binary': (_event, ref, target) => require('../main/library-output.cjs').readAsync(sessions.get(ref), target),
     })) ipcMain.handle(name, handler);
+    require('../main/file-type-icons.cjs').install({ app, ipcMain });
     require('../main/library-local.cjs').install({ app, BrowserWindow, ownerOf: () => owner,
       ipcMain: { handle(name, fn) { ipcMain.handle(name, (event, ...args) => {
         if (args[0] === 'upload') { writes++; if (failWrite) throw Error('Fixture disk write failed'); }
@@ -63,6 +135,8 @@ if (typeof electron === 'string') {
       }); } }, shell: { openPath: async () => { externalOpens++; return ''; }, showItemInFolder() {} },
       dialog: { showSaveDialog: async () => { externalOpens++; return { canceled: true }; } } });
     require('../main/conversation/delivery-package-ipc').install({ ipcMain, session: { get: ref => sessions.get(ref) }, BrowserWindow, dialog: {} });
+    require('../main/pi-session/artifact-ipc').install({ app, BrowserWindow, session: sessions,
+      ipcMain: { handle(name, handler) { if (name === 'pi-session-outputs') ipcMain.handle(name, handler); } } });
     for (const ext of ['md', 'html', 'png', 'pdf', 'xlsx', 'docx', 'pptx', 'bundle', 'legacy']) {
       const cwd = path.join(root, ext); fs.mkdirSync(cwd);
       const files = ext === 'bundle' ? { 'a.md': '# A', 'nested/b.md': '# B' } : { ['result.' + (ext === 'legacy' ? 'md' : ext)]: ext === 'html' ? '<!doctype html><html><body>Result</body></html>' : '# Exact file bytes: ' + ext };
@@ -113,6 +187,7 @@ if (typeof electron === 'string') {
     await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     await delay(150);
     fs.writeFileSync(path.join(out, 'bundle-saved.png'), (await win.webContents.capturePage()).toPNG());
+    await historicalSingleFile();
     assert.equal(externalOpens, 0, 'Saving never opens a system app or download dialog');
     report.ok = true;
   }).catch(error => { report.error = String(error.stack); }).finally(async () => {

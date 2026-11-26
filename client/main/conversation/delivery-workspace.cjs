@@ -61,13 +61,53 @@ function fileGuard(cwd, workspace) {
   };
 }
 
+function relativeLink(key, relative) {
+  if (!validKey(key)) return;
+  try { return '.soduwork-drafts/' + key + '/' + require('./portable-workspace').portablePath(relative); }
+  catch (_) { return; }
+}
+
+function liveLinks(cwd, workspace) {
+  if (!workspace) return;
+  const verified = root(cwd, workspace);
+  return (item, canonical) => {
+    const link = relativeLink(workspace.key, item.relative);
+    if (!link || !item.artifactId || !item.path || !canonical) return;
+    const expected = path.join(verified, item.relative);
+    if (path.relative(expected, item.path) === '' && path.relative(expected, canonical) === '') return link;
+  };
+}
+
+function historyLinks(row, history) {
+  const key = row.deliveryWorkspaceKey;
+  if (!validKey(key)) return;
+  // Before the receipt recorded its namespace, only the authenticated inventory
+  // from that exact draft root can establish a legacy file's project-relative name.
+  const sameRoot = row.cwd && history.root && path.relative(path.join(row.cwd, '.soduwork-drafts', key), history.root) === '';
+  const originals = new Map((sameRoot ? history.items || [] : []).filter(item => !item.archiveOnly)
+    .map(item => [item.metadata.relative, item]));
+  const copies = new Map((history.archive?.files || []).map(file => [file.relative, file]));
+  return item => {
+    const source = item.historicalSource;
+    if (source?.sessionId !== row.id) return;
+    if (source.deliveryWorkspaceKey) return source.deliveryWorkspaceKey === key ? relativeLink(key, item.relative) : undefined;
+    const original = originals.get(item.relative);
+    if (!original || original.source?.sessionId !== row.id || original.source?.turnId !== source.turnId) return;
+    if (item.versionId) {
+      const copy = copies.get(item.relative);
+      if (copy?.sha256 !== item.versionHash || !require('./runtime-artifacts.cjs').same(original.stamp, copy?.sourceStamp)) return;
+    }
+    return relativeLink(key, item.relative);
+  };
+}
+
 function prompt(workspace) {
   const relative = '.soduwork-drafts/' + workspace.key + '/';
   return 'The selected project remains your working directory. For a request to edit the existing project, read and edit its actual files in place. ' +
     'For any new standalone deliverable (including reports, screenshots, websites and installable packages), use this conversation’s private delivery directory: ' +
     relative + '. Create it when producing files. Keep deliverable dependencies, previews, package manifests and evidence inside it. ' +
     'If the user explicitly requests a particular destination, honor it and stage a copy of the final deliverable here. ' +
-    'In the final answer link staged files relative to the delivery directory. Do not use another conversation’s staged files or overwrite published copies.';
+    'In the final answer use Markdown links with only the filename as the visible label and the file path relative to the delivery directory as the target, e.g. [report.txt](docs/report.txt). Do not use another conversation’s staged files or overwrite published copies.';
 }
 
 // Keep a failed capture local to the completed turn. It must never retry an
@@ -111,4 +151,4 @@ function changes(before, after, turnId) {
   return require('./file-change-journal').compare(before, after, { turnId });
 }
 
-module.exports = { allocate, changes, deliverySnapshot, ensure, fileGuard, freezeTurn, prompt, publishedDirectory, resolve, root, validKey };
+module.exports = { allocate, changes, deliverySnapshot, ensure, fileGuard, freezeTurn, historyLinks, liveLinks, prompt, publishedDirectory, resolve, root, validKey };

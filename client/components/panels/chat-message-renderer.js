@@ -237,6 +237,10 @@
     return a.length === b.length && a.every((value, index) => value === b[index]);
   }
 
+  function assistantMarkup(html, streaming) {
+    return global.ChatOutputLinks?.presentDeliveryPaths?.(html, streaming) ?? html;
+  }
+
   function _patchLiveStream(list, snap, messages, tools) {
     if (!list || !snap || snap.status !== 'streaming' || !liveStreamShape) return false;
     const shape = _streamStructure(snap, messages, tools);
@@ -262,7 +266,7 @@
       const text = node && node.querySelectorAll('.ntext')[block.textIndex];
       if (!text) { valid = false; return; }
       const copy = node.querySelector('.nmessage-footer [data-copy-message]');
-      const html = _streamText(block.text);
+      const html = assistantMarkup(_streamText(block.text), true);
       if (streamMarkup.get(text) !== html) {
         const next = text.cloneNode(false);
         next.innerHTML = html;
@@ -332,7 +336,7 @@
         ctx._liveTextKey === mi + ':' + blockIndex;
       const content = streaming ? _streamText(b.text) :
         (acceptance.html(b.text, _messageOwner(mi, ctx._snap) + ':' + blockIndex, mi) || rich(b.text));
-      return '<div class="ntext" data-block="' + blockIndex + '">' + content + '</div>';
+      return '<div class="ntext" data-block="' + blockIndex + '">' + assistantMarkup(content, streaming) + '</div>';
     }
     return '';        // Tool cards already represent toolcall blocks; do not render them twice.
   }

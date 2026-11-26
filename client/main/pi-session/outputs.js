@@ -218,4 +218,4 @@ function navigation(cwd, raw) {
   return { kind: 'blocked' };
 }
 
-module.exports = { inventoryAsync: (cwd, since) => collectAsync(cwd, since, 0, []), list, scan, scanAsync, withJournal, inside, navigation, _collect: collect };
+module.exports = { fileIO, inventoryAsync: (cwd, since) => collectAsync(cwd, since, 0, []), list, scan, scanAsync, withJournal, inside, navigation, _collect: collect };

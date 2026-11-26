@@ -89,7 +89,8 @@ function inspect(root, files, receipts, skillRuntimeEntry) {
     cards.push({ relative, pluginDraft: true, pluginPackage: drafts.ARCHIVE.test(relative), skillPackage: Boolean(loaded?.skillName),
       pluginKey: loaded?.skillName || loaded?.body.key || '', pluginName: loaded?.skillName || loaded?.body.name || '',
       pluginVersion: loaded?.body.version || '', pluginRevision: revision, pluginManifestDigest: loaded?.digest,
-      dependencies, pluginRevisionAt: Math.round(revisionAt), pluginValidation: { state: diagnostic ? 'invalid' : 'ready',
+      dependencies, pluginDeliveryPaths: (loaded?.body.resources || []).map(row => path.join(path.dirname(relative), row.path)),
+      pluginRevisionAt: Math.round(revisionAt), pluginValidation: { state: diagnostic ? 'invalid' : 'ready',
         revision, relative, attempt: 0, ...(diagnostic ? { diagnostic } : {}) } });
   }
   return cards;

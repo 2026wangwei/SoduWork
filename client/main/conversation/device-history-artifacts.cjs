@@ -180,6 +180,9 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
       const owner = verifiedTurn && !verifiedTransfer ? journal : piTurns.get(relative);
       if (owner?.turnId && versions.same(turnFiles.get(relative), entry.stamp)) {
         entry.source = { ...entry.source, turnId: owner.turnId };
+        if (verifiedTurn && row.deliveryWorkspaceKey && path.basename(root) === row.deliveryWorkspaceKey &&
+            path.basename(path.dirname(root)) === '.soduwork-drafts')
+          entry.source.deliveryWorkspaceKey = row.deliveryWorkspaceKey;
         if (Number.isSafeInteger(owner.userMessageIndex) && owner.userMessageIndex >= 0)
           entry.source.userMessageIndex = owner.userMessageIndex;
       }

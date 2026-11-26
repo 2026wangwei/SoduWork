@@ -152,8 +152,48 @@
     }
     return container;
   }
+  function filesOutsideInstallCards(root, files, ref, snapshot) {
+    const drafts = files.filter(file => file.pluginDraft);
+    if (!drafts.length) return files;
+    const byId = new Map(drafts.map(file => [key(file), file]));
+    const history = snapshot.history || {}, messages = snapshot.messages || [];
+    const singleTurn = !snapshot.historyRecovery?.incomplete && !history.truncated && !history.messageStart &&
+      (history.totalMessages == null || history.totalMessages === messages.length) &&
+      messages.filter(message => message.role === 'user').length === 1;
+    for (const card of root.querySelectorAll('.nplugin-draft[data-chat-node]')) {
+      const draft = byId.get(card.dataset.chatNode.slice('plugin-draft:'.length));
+      if (!draft) continue;
+      const paths = new Set([draft.relative, ...(draft.pluginDeliveryPaths || [])].filter(Boolean));
+      const owner = card.closest('.nmsg.ai');
+      const turns = new Set(files.filter(file => file.versionId && file.originalArtifactId === key(draft) &&
+        file.at === draft.at && file.size === draft.size).map(file => file.turnId));
+      if (owner?.dataset.deliveryTurn) turns.add(owner.dataset.deliveryTurn);
+      // A completed reply may already carry its ordinary card from before
+      // package inspection finished. Keep any independent results on that reply.
+      for (const carried of owner?.querySelectorAll('[data-delivery]') || []) {
+        const group = groups.get(carried.dataset.delivery);
+        if (group?.ref !== ref || group.scope !== scope() || group.taskId) continue;
+        const keep = group.files.filter(file => !paths.has(file.relative) ||
+          file.versionId && !turns.has(file.turnId));
+        if (keep.length !== group.files.length) {
+          if (keep.length) carried.replaceWith(deliveryCard(root.ownerDocument, keep, ref, snapshot));
+          else carried.remove();
+        }
+      }
+      // Hide only the files represented by this install card. A different
+      // turn may have independently delivered the same relative filename.
+      files = files.filter(file => {
+        if (file.taskId || !paths.has(file.relative)) return true;
+        if (file === draft) return false;
+        if (file.versionId) return !turns.has(file.turnId) && !(singleTurn && !turns.size);
+        return !snapshot.localReplica && owner?.dataset.deliveryCurrent === 'false' && file.changedInTurn;
+      });
+    }
+    return files;
+  }
   function decorate(root, files, ref, snapshot = {}) {
     if (!root || !ref || !isSettled(snapshot)) return;
+    files = filesOutsideInstallCards(root, files, ref, snapshot);
     const summaryOnly = snapshot.delivery?.presentation === 'summary' || snapshot.deliveryPresentation === 'summary' ||
       snapshot.deliveryMode === 'git' || snapshot.cloudHandoff?.deliveryMode === 'git';
     if (snapshot.localReplica === true && !snapshot.cloudHandoff?.taskId) {
@@ -496,18 +536,26 @@
   async function hydrateLocalStatus(group, manifest) {
     // A read-only receipt lookup must not hold up metadata inspection for other
     // cards, or restore stale account data after the scope was cleared.
-    if (jobs.get(group.id)?.manual || !manifest?.sessionId || !manifest?.revision ||
+    const job = jobs.get(group.id);
+    if (!job || job.manual || job.receiptLookup?.revision === manifest?.revision || !manifest?.sessionId || !manifest.revision ||
         typeof global.SoduWorkAPI?.getLibraryDeliveryStatus !== 'function') return;
+    const lookup = { revision: manifest.revision };
+    job.receiptLookup = lookup;
     try {
       const response = await global.SoduWorkAPI.getLibraryDeliveryStatus(manifest);
-      if (group.scope !== scope() || groups.get(group.id) !== group || jobs.get(group.id)?.manual) return;
+      const current = groups.get(group.id), state = jobs.get(group.id);
+      // Rendering the same revision may replace its card while the library is reading.
+      if (group.scope !== scope() || !current || state?.receiptLookup !== lookup || state.manual ||
+          state.manifest?.revision !== manifest.revision) return;
       const saved = response?.delivery;
       if (saved && (saved.sessionId !== manifest.sessionId || saved.revision !== manifest.revision)) return;
       if (saved) {
-        const job = jobs.get(group.id) || {}; jobs.set(group.id, job);
-        job.delivery = group.delivery = saved; repaint(group);
+        state.delivery = current.delivery = saved; repaint(current);
       }
-    } catch { /* Offline lookup leaves the explicit save action available. */ }
+    } catch {
+      const state = jobs.get(group.id);
+      if (state?.receiptLookup === lookup) delete state.receiptLookup;
+    }
   }
   function inspect(group, api) {
     if (!api?.inspectDelivery || group.inspectRequested || group.delivery || jobs.get(group.id)?.manifest ||
@@ -543,7 +591,11 @@
         if (saved.revision) group.receiptRevision = saved.revision;
       }
       hydrateRemoteStatus(group);
-      if (isSettled(snapshot)) inspect(group, api);
+      if (isSettled(snapshot)) {
+        const state = jobs.get(group.id);
+        if (!group.taskId && state?.manifest && !state.delivery) void hydrateLocalStatus(group, state.manifest);
+        else inspect(group, api);
+      }
       paint(card, group);
       // Hydration is read-only. Save only through the explicit icon action.
     });

@@ -423,10 +423,20 @@ test('a queue-level refusal stays retryable, an ambiguous failure stays visible,
 });
 
 test('cold project filing requires durable acceptance and the exact session acknowledgement', async t => {
-  const f = fixture(t), req = f.request(), ready = gate();
+  const f = fixture(t), req = f.request(), ready = gate(), opening = gate(), sending = gate();
   req.sidebarProjectId = 'sidebar-project';
-  const service = create({ ...f.config, received: () => ready.promise });
+  const service = create({ ...f.config, received: () => ready.promise,
+    open: () => opening.promise, send: () => sending.promise });
   await service.start(null, req);
+  const [starting] = (await service.list(null)).rows;
+  assert.equal(starting.sidebarProjectId, 'sidebar-project');
+  assert.equal(starting.sessionId, '');
+  opening.resolve({ ok: true, ref: 'ref-1', sessionId: 'chat-1' }); await tick();
+  const [allocated] = (await service.list(null)).rows;
+  assert.equal(allocated.sidebarProjectId, 'sidebar-project');
+  assert.equal(allocated.sessionId, 'chat-1');
+  assert.equal(allocated.status, 'sending');
+  sending.resolve({ ok: true });
   const result = (await service.act(null, req.intentId, 'wait')).row;
   assert.deepEqual((await service.associations(null)).rows, [], 'in-memory admission alone cannot organize an archive');
   await assert.rejects(service.ackAssociations(null, req.intentId, result.sessionId), /原会话/);
@@ -437,7 +447,9 @@ test('cold project filing requires durable acceptance and the exact session ackn
   f.use(f.a);
   const file = path.join(f.root, f.a, req.intentId + '.json');
   const row = JSON.parse(fs.readFileSync(file)); row.acceptedAt -= 120000; fs.writeFileSync(file, JSON.stringify(row));
-  assert.deepEqual((await cold.list(null)).rows, [], 'expired sidebar placeholder stays hidden');
+  const [projection] = (await cold.list(null)).rows;
+  assert.equal(projection.sidebarProjectId, 'sidebar-project', 'keep the intended folder until the filing acknowledgement');
+  assert.equal(projection.sessionId, result.sessionId);
   const [pending] = (await cold.associations(null)).rows;
   assert.equal(pending.sessionId, result.sessionId); assert.equal(pending.sidebarProjectId, 'sidebar-project');
   await cold.ackAssociations(null, req.intentId, result.sessionId);

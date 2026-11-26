@@ -85,13 +85,13 @@ async function _attachmentImage(handle, ref, token) {
       const handle = await resolveSession(original);
       const { got, delivery, items } = await artifactRuntime.viewSnapshotAsync(handle);
       if (handle.historyArtifacts) {
-        const artifacts = artifactRuntime.decorate(ref, { items });
+        const artifacts = artifactRuntime.decorate(ref, { items }, handle);
         const primary = new Set(delivery.items.map(item => item.artifactId));
         const deliverables = artifacts.filter(item => primary.has(item.artifactId));
         await handle.historyArtifacts.authorize();
         return { ok: true, files: [], deliverables, artifacts, delivery: { ...delivery, items: deliverables }, truncated: false };
       }
-      const artifacts = await artifactRuntime.decorateForSharing(ref, { items });
+      const artifacts = await artifactRuntime.decorateForSharing(ref, { items }, handle);
       return { ok: true, files: got.files || [], deliverables: delivery.items || [], artifacts, delivery,
         cloudOutputs: got.cloudOutputs, truncated: Boolean(got.truncated) };
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }

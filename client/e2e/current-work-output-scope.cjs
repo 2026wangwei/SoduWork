@@ -159,6 +159,64 @@ if (typeof electron === 'string') {
     await until(rightWebsite, 'explicit reopen of frozen HTML from history');
     await historyView.close();
     report.cases.push('A settled live turn opens the frozen HTML with its CSS. After the draft is deleted, the artifact IPC lists the version through the native history source and the right pane opens the same version through its registered facade. Manual close survives refresh.');
+
+    const textName = '春天的短文.txt', originalText = '春水刚刚漫过青石，岸边的柳树冒出了新芽。';
+    const textWorkspace = workspaces.allocate(workspace), textDir = workspaces.ensure(workspace, textWorkspace);
+    const textBefore = await journal.snapshot(textDir);
+    const textRow = { ...row, id: 'spring-essay' };
+    const textPath = path.relative(workspace, path.join(textDir, textName)).split(path.sep).join('/');
+    const textSnapshot = { status: 'idle', tools: [], messages: [
+      { role: 'user', submissionId: 'spring-turn', text: '请写一篇春天的短文。' },
+      { role: 'assistant', done: true, blocks: [{ index: 0, kind: 'text', text: '短文已完成，已保存为 txt 文件：' + textPath + '。' }] },
+    ] };
+    const textHandle = bridge.attachView({ ref: textRow.id, sessionId: textRow.id, cwd: workspace, deliveryWorkspace: textWorkspace,
+      historyRow: () => textRow, snapshot: () => textSnapshot, outputSnapshot: () => outputs.scan(textDir, 0, 1), close: async () => true });
+    deviceHistory.observe(textHandle, identity);
+    fs.writeFileSync(path.join(textDir, textName), originalText);
+    await textHandle.captureArtifactTurn(journal.compare(textBefore, await journal.snapshot(textDir), { turnId: 'spring-turn' }));
+
+    // Mount the production message renderer, composer click delegate and workbench together.
+    const transcriptFixture = path.join(client, 'e2e/fixtures/tool-details-lazy.html');
+    async function openTranscript(ref, snap) {
+      await win.loadFile(transcriptFixture);
+      await js(`(async () => {
+        ctx._ref = ${JSON.stringify(ref)};
+        ctx._outs = (await soduWorkAPI.conversationSession.outputs(ctx._ref)).artifacts;
+        showSnapshot(${JSON.stringify(snap)});
+      })()`);
+    }
+    const textLink = '#nchatList .nmsg.ai .ntext .noutput-inline';
+    async function clickEssay() {
+      const version = await js('ctx._outs.find(file => file.versionId && file.turnId === "spring-turn")');
+      assert.equal(version?.deliveryRelativePath, textPath, 'production IPC returns the verified draft reference for the frozen original');
+      const message = await js('document.querySelector("#nchatList").textContent');
+      assert.ok(message.includes(textName));
+      assert.doesNotMatch(message, /\.soduwork-drafts|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+      assert.deepEqual(await js(`[...document.querySelectorAll(${JSON.stringify(textLink)})].map(button => [button.textContent, button.dataset.openApp])`),
+        [[textName, version.artifactId]], 'the visible filename in assistant prose targets the turn original');
+      if (await js('ChatWorkbench.state().open')) await click('[data-wb-close]');
+      await js(`document.querySelector(${JSON.stringify(textLink)}).scrollIntoView({ block: 'center' })`);
+      await until(() => js(`(() => {
+        const link = document.querySelector(${JSON.stringify(textLink)}), r = link.getBoundingClientRect();
+        return link.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+      })()`), 'the scrolled transcript filename to become clickable');
+      await click(textLink);
+      await until(() => js(`ChatWorkbench.state().open && document.querySelector('.ncw-body')?.innerText.includes(${JSON.stringify(originalText)})`),
+        'reading the original essay in the right pane after clicking its filename');
+      return version.artifactId;
+    }
+    await openTranscript(textHandle.ref, textHandle.snapshot());
+    const originalId = await clickEssay();
+    await textHandle.close();
+    fs.rmSync(textDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaces.ensure(workspace, workspaces.allocate(workspace)), textName), '另一个会话写入的同名文件。');
+    await openTranscript('second', snapshot('second'));
+    assert.equal(await js('document.querySelector("#nchatList").textContent.includes("春天的短文.txt")'), false);
+    const textHistory = bridge.attachView(await deviceHistory.open(textRow.id, { historyPreview: true }), { historyPreview: true });
+    await openTranscript(textHistory.ref, textHistory.snapshot());
+    assert.equal(await clickEssay(), originalId, 'reopened replies still target the original version');
+    await textHistory.close();
+    report.cases.push('A native mouse click on 春天的短文.txt in the actual assistant reply opens its text on the right. The same visible filename reopens the frozen original from device history after switching sessions and replacing the draft workspace.');
     assert.deepEqual(report.errors, []);
     report.ok = true;
   }).catch(error => { report.error = String(error.stack || error); }).finally(async () => {

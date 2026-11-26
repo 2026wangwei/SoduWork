@@ -385,7 +385,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       guard();
       if (!readable(latest)) throw Error('会话归属已变化，请重新打开成果');
     };
-    return { guard, authorize };
+    return { guard, authorize, deliveryLink: require('./delivery-workspace.cjs').historyLinks(row, content.localArtifactHistory) };
   }
   function bindTurnArtifacts(handle, getId, captured, current) {
     const runtime = require('./artifact-runtime');
@@ -404,6 +404,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       if (!guards) return [];
       const result = await require('./artifact-versions.cjs').readers(app.getPath('userData'), row.id,
         content.localArtifactHistory.archive, guards.guard, guards.authorize);
+      for (const { reader } of result) reader.deliveryLink = guards.deliveryLink;
       current();
       scoped.guard(captured);
       lastDigest = version;
@@ -435,6 +436,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         { ...records, items: accepted(records.items), resources: accepted(records.resources) });
       reader = saved?.items.length ? require('./device-history-artifacts.cjs').view(
         saved.root, saved, guards.guard, guards.authorize) : null;
+      if (reader) reader.deliveryLink = guards.deliveryLink;
       digest = version;
       return reader;
     });
@@ -445,7 +447,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
     let content = null, bodyMissing = false;
     if (!row.cached) {
       try { content = await deviceHistory.saved(row.id, { refresh: true, preferRecorded: true,
-        allowUndispatchedTail: historyPreview && allowContinuation }); }
+        continuationPreview: historyPreview && allowContinuation }); }
       catch (error) { if (error.code !== 'NATIVE_HISTORY_MISSING') throw error; bodyMissing = true; }
     }
     const nativeUnavailable = content?.nativeReadError && content.nativeReadError.code !== 'NATIVE_HISTORY_MISSING';
@@ -502,6 +504,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         view.close = async () => { disposed = true; return close(); };
         view.historyArtifacts = require('./device-history-artifacts.cjs').archivedView(
           app.getPath('userData'), row.id, row.cwd, content.localArtifactHistory, guards.guard, guards.authorize);
+        view.historyArtifacts.deliveryLink = guards.deliveryLink;
       }
     }
     const load = view.loadHistory;

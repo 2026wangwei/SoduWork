@@ -9,6 +9,12 @@ const template = 'templates/review.md';
 const content = '# Review\nCompare the supplied facts against the checklist.\n';
 const chats = ['history-method', 'history-archive', 'history-app', 'history-unrecorded', 'history-connector', 'history-workflow'];
 
+async function exportPlugin(root, filename, manifest) {
+  const author = { getPath: () => path.join(root, 'export-profile') };
+  const { plugin } = personal.create(author, { ...manifest, resources: [{ ...manifest.resources[0], content, encoding: 'utf8' }] });
+  await personal.exportToFile(author, { showSaveDialog: async () => ({ canceled: false, filePath: filename }) }, plugin.pluginId);
+}
+
 async function write(root, row) {
   const folder = path.join(row.cwd, 'delivery');
   const manifest = { template: 'method', key: row.id, name: row.id, version: '1.0.0',
@@ -38,16 +44,21 @@ async function write(root, row) {
     files = [draftName, ...draft.resources.map(resource => resource.path)];
   } else if (row.id === 'history-archive') {
     const archive = 'method.soduwork-plugin';
-    const author = { getPath: () => path.join(root, 'export-profile') };
     fs.mkdirSync(folder);
-    const { plugin } = personal.create(author, { ...manifest, resources: [{ ...manifest.resources[0], content, encoding: 'utf8' }] });
-    await personal.exportToFile(author, { showSaveDialog: async () => ({ canceled: false, filePath: path.join(folder, archive) }) }, plugin.pluginId);
-    files = [archive];
+    await exportPlugin(root, path.join(folder, archive), manifest);
+    fs.mkdirSync(path.join(folder, 'templates'));
+    fs.writeFileSync(path.join(folder, template), content);
+    files = [archive, template];
   } else {
     fs.mkdirSync(path.join(folder, 'templates'), { recursive: true });
     fs.writeFileSync(path.join(folder, draftName), JSON.stringify(manifest));
     fs.writeFileSync(path.join(folder, template), content);
     files = row.id === 'history-unrecorded' ? [draftName] : [draftName, template];
+    if (row.id === 'history-method') {
+      const renamed = 'renamed-export.soduwork-plugin';
+      await exportPlugin(root, path.join(folder, renamed), manifest);
+      files.push(renamed);
+    }
   }
   return files.map(file => 'delivery/' + file);
 }
@@ -56,8 +67,13 @@ async function verify({ app, root, activate, click, js, until, report }) {
   const installed = key => personal.catalog(app, true).find(row => row.key === key);
   for (const id of chats.slice(0, 3)) {
     assert.equal(await activate(id), 1, 'Cold history must expose exactly one install action for ' + id);
+    assert.equal(await js("document.querySelectorAll('#delivery .ndelivery').length"), 0,
+      'The plugin and its declared resources are represented by its install action');
     const ref = await js("document.querySelector('[data-install-plugin-draft]').dataset.pluginDraftRef");
     const target = await js("document.querySelector('[data-install-plugin-draft]').dataset.installPluginDraft");
+    const readPackage = () => js(`soduWorkAPI.conversationSession.pluginDraft(${JSON.stringify(ref)}, ${JSON.stringify(target)})`);
+    const original = await readPackage();
+    assert.equal(original.ok, true);
     await click('[data-install-plugin-draft]');
     await until(() => js("!document.getElementById('capModalLayer')?.hidden && !!document.getElementById('capLocalOnly')"), 'installation preview for ' + id);
     assert.equal(await js("document.getElementById('capLocalInstall').textContent"), id === 'history-app' ? '安装并打开' : '安装并试用');
@@ -83,10 +99,11 @@ async function verify({ app, root, activate, click, js, until, report }) {
       if (id === 'history-method') fs.writeFileSync(path.join(folder, template), 'different bytes');
       else fs.unlinkSync(path.join(folder, 'method.soduwork-plugin'));
     }
-    const stale = await js(`soduWorkAPI.conversationSession.pluginDraft(${JSON.stringify(ref)}, ${JSON.stringify(target)})`);
-    assert.equal(stale.ok, false, 'The previous card must refuse a changed or missing resource');
-    assert.equal(await activate(id), 0, 'Reopening must not re-enable installing the changed bytes');
-    report.cases.push('Historical ' + id + ' preflight and explicit installation preserve the verified package and reject changed or missing files');
+    const archived = await readPackage();
+    assert.equal(archived.ok, true);
+    assert.deepEqual(archived.body, original.body, 'Workspace edits cannot change the archived package');
+    assert.equal(await activate(id), 1, 'Reopening restores the original installation action');
+    report.cases.push('Historical ' + id + ' preflight and explicit installation preserve the original archive after workspace changes');
   }
   assert.equal(await activate('history-unrecorded'), 0, 'An unreceipted resource cannot be collected from a neighboring folder');
   assert.equal(installed('history-unrecorded'), undefined);
