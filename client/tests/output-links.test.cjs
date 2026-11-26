@@ -23,6 +23,20 @@ test('ambiguous basenames never open a different task or directory',()=>{
   assert.equal(links.fileTarget('report.html',rows),null);
   assert.equal(links.fileTarget('two/report.html',rows)?.artifactId,'b');
 });
+test('requirement card click scope follows the attachment through materialization and rejects a misplaced row', () => {
+  const remote = {artifactId: 'task-output:t:a', taskId: 't', attachmentId: 'a', relative: 'index.html'};
+  const local = {artifactId: 'art-1', cloudTaskId: 't', remoteAttachmentId: 'b', relative: 'result.html'};
+  const other = {artifactId: 'art-2', cloudTaskId: 'other', remoteAttachmentId: 'c', relative: 'index.html'};
+  const free = {artifactId: 'art-3', relative: 'index.html'};
+  function source(taskId, rowTask) {
+    const owner = {dataset: {outputTask: taskId}}, row = {dataset: {outputTaskId: rowTask}};
+    return {closest: selector => selector === '[data-output-task]' ? owner : selector === '.noutput-library-row' ? row : null};
+  }
+  assert.deepEqual(links.scoped(source('t', 't'), [remote, local, other, free]), [remote, local]);
+  assert.deepEqual(links.scoped(source('', 't'), [local, other]), [local]);
+  assert.deepEqual(links.scoped(source('t', 'other'), [local, other]), []);
+  assert.deepEqual(links.scoped(source('t'), [other, free]), [free]);
+});
 test('an explicit screenshot evidence path never falls back to an unrelated same-name asset',()=>{
   const shot={artifactId:'shot',name:'homepage.png',relative:'.soduwork/evidence/homepage.png'};
   const asset={artifactId:'asset',name:'homepage.png',relative:'assets/homepage.png'};

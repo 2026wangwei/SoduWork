@@ -347,21 +347,24 @@
   }
   function scoped(node, files) {
     files = asFiles(files);
-    const owner = node.closest('[data-output-task]');
-    if (!owner) return files;
-    const taskId = owner.dataset.outputTask;
+    const owner = node.closest('[data-output-task]')?.dataset;
+    const rowTask = node.closest('.noutput-library-row')?.dataset?.outputTaskId;
+    const ownerTask = owner?.outputTask;
+    if (rowTask && ownerTask && rowTask !== ownerTask) return [];
+    if (!owner && !rowTask) return files;
+    const taskId = rowTask || ownerTask;
     if (!taskId) {
-      if (owner.dataset.deliveryTurn === undefined && !owner.dataset.deliveryRestored) return files;
-      const selection = filesForTurn(files, owner.dataset.deliveryTurn, owner.dataset.deliveryCurrent !== 'false');
-      const selected = owner.dataset.deliveryRestored ? selection.filter(file => file.versionId) : selection;
-      if (!owner.dataset.deliveryArchiveIds) return selected;
-      const archiveIds = new Set(owner.dataset.deliveryArchiveIds.split(' '));
+      if (owner.deliveryTurn === undefined && !owner.deliveryRestored) return files;
+      const selection = filesForTurn(files, owner.deliveryTurn, owner.deliveryCurrent !== 'false');
+      const selected = owner.deliveryRestored ? selection.filter(file => file.versionId) : selection;
+      if (!owner.deliveryArchiveIds) return selected;
+      const archiveIds = new Set(owner.deliveryArchiveIds.split(' '));
       const inferred = files.filter(file => file.versionId && archiveIds.has(key(file)));
       const originals = new Set(inferred.map(file => file.originalArtifactId));
       return selected.filter(file => !archiveIds.has(key(file)) && !originals.has(key(file))).concat(inferred);
     }
-    const own = files.filter(file => file.taskId === taskId);
-    return own.length ? own : files.filter(file => !file.taskId);
+    const own = files.filter(file => (file.taskId || file.cloudTaskId) === taskId);
+    return own.length ? own : files.filter(file => !file.taskId && !file.cloudTaskId);
   }
   function button(doc, file, text) {
     const node = doc.createElement('button');
@@ -1015,6 +1018,9 @@
       [meta.kind, meta.type, meta.category, row.category].some(tag => evidenceKinds.has(normalizeTag(tag)));
   }
   const isOutput = row => row && outputRoles.has(String(row.role || '').toLowerCase());
+  function taskOutputId(taskId, attachmentId) {
+    return taskId && attachmentId ? 'task-output:' + encodeURIComponent(taskId) + ':' + encodeURIComponent(attachmentId) : '';
+  }
   async function load(api, ref, taskIds, previous, hub) {
     const local = await api.outputs(ref);
     if (!local || local.ok === false) throw Error('成果索引暂时不可用');
@@ -1057,7 +1063,7 @@
               category: meta.category || row.category || '',
             };
           })(),
-          artifactId:'task-output:'+encodeURIComponent(taskId)+':'+encodeURIComponent(row.id),
+          artifactId:taskOutputId(taskId, row.id),
           taskId, attachmentId:row.id, name:row.filename, relative:row.filename,
           size:row.size, at:Number(row.createdAt)||Date.parse(row.createdAt||'')||0,
           sha256:row.sha256 || row.evidenceMeta?.sha256,
@@ -1225,7 +1231,7 @@
   // keyed by (ref + files) signatures so they can never leak across sessions,
   // and the WeakMap drops entries for replaced nodes on its own.
   function resetDecorateCache() { decorateMemo = null; }
-  const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
+  const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,taskOutputId,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
     isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,
     isPluginDraft,pluginDrafts,_supersededDraftCard:supersededDraftCard,_claimInlineMedia:claimInlineMedia,
     _buildLinkIndex:buildLinkIndex,_decorateStateSignature:decorateStateSignature,resetDecorateCache};

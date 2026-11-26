@@ -41,7 +41,7 @@ if (typeof electron === 'string') {
       window.shot={artifactId:'shot',name:'screenshot.png',relative:'screens/screenshot.png',primary:false,processEvidence:true,at:2};
       window.base='<article class="nmsg user" data-chat-node="message:0">Build</article>'+ '<article class="nmsg ai" data-chat-node="message:1" data-delivery-final="false"><span data-output-image-ref="screens/screenshot.png">Screenshot</span></article>'+ '<article class="nmsg ai" data-chat-node="message:2" data-delivery-final="true"><div class="ntext"><a href="index.html">Website</a></div></article>';
       window.calls=[];window.api={inspectDelivery:async(ref,ids)=>{calls.push(['inspect',ids]);return{ok:true,manifest:{files:[{path:'index.html',size:1}]}}},prepareDelivery:async(ref,ids)=>{calls.push(['prepare',ids]);return{ok:true,manifest:{files:[{path:'index.html',size:1}]}}}};
-      messages.addEventListener('click',event=>{if(event.target.closest('[data-delivery-retry],[data-delivery-open],[data-delivery-local]'))void ChatDeliveries.handle(event.target,api)});
+      messages.addEventListener('click',event=>{if(event.target.closest('[data-delivery-retry],[data-delivery-local]'))void ChatDeliveries.handle(event.target,api)});
       window.render=(html,files,snapshot={},previous=null)=>messages.innerHTML=ChatOutputLinks.decorate(html,files,currentRef,{status:'idle',...snapshot},previous);void 0;`);
     for (const name of ['chat-dom-patch.js', 'panels-chat-tools.js', 'library-file-icons.js', 'chat-deliveries.js', 'chat-output-links.js', 'chat-composer-bindings.js']) await js(fs.readFileSync(path.resolve(__dirname, '../components/panels', name), 'utf8'));
     await js('render(base,[site,shot]);');
@@ -58,9 +58,17 @@ if (typeof electron === 'string') {
     assert.equal(await js('messages.querySelector("[data-delivery-files-count]").textContent'), '1 个文件');
     assert.equal(await js(`(()=>{
       const header=messages.querySelector('.ndelivery > header'), title=header.querySelector('.ndelivery-heading button');
-      return [header,header.querySelector('.ndelivery-icon'),title.firstElementChild].every(el=>ChatComposerBindings.outputPreviewButton(el)===title)
+      return [header.parentElement,header,header.querySelector('.ndelivery-icon'),title.firstElementChild].every(el=>ChatComposerBindings.outputPreviewButton(el)===title)
         && [...header.querySelectorAll('.ndelivery-actions button')].every(el=>!ChatComposerBindings.outputPreviewButton(el));
     })()`),true,'the single-file header and icon use the title target while toolbar buttons keep their own actions');
+    assert.equal(await js(`(()=>{
+      const card=messages.querySelector('.ndelivery[data-preview-file]'),title=card.querySelector('[data-delivery-title]');
+      const selection=getSelection(),range=document.createRange();range.selectNodeContents(title);
+      selection.removeAllRanges();selection.addRange(range);
+      const borderWhileSelecting=ChatComposerBindings.outputPreviewButton(card);
+      selection.removeAllRanges();
+      return !borderWhileSelecting && !ChatComposerBindings.outputPreviewButton(card.querySelector('.ndelivery-files'));
+    })()`),true,'selecting card text and clicking nested details retain their native behavior');
     report.cases.push('Explicit evidence appears above its final delivery without entering inspect, save or file-count collections');
 
     await js(`window.titledSite={...site,artifactId:'titled-site',kind:'website',title:'四季花园'};
@@ -121,21 +129,23 @@ if (typeof electron === 'string') {
     assert.equal(await js('messages.querySelectorAll(".ndelivery-preview").length'), 0);
     report.cases.push('Summary-only evidence remains previewable; a primary image has one ordinary delivery group');
 
-    // File actions preserve the draft; saved-file previews replace the retired continue shortcut.
+    // Opening a saved file in the library preserves the current conversation draft.
     await js(`render(base,[site,shot]);nchatInput.setSelectionRange(2,6);nchatInput.blur();
-      window.savedOpens=[];window.ChatWorkbench={openSavedDelivery:(id,options)=>{savedOpens.push({id,title:options.title});return true}};void 0;`);
-    await click('[data-delivery-open]');
+      window.savedOpens=[];window.LibraryTransfer={decorateOutputs(){}, openSavedItem:async item=>savedOpens.push(item)};void 0;`);
+    assert.equal(await js('messages.querySelectorAll("[data-delivery-open]").length'), 0);
+    await click('[data-delivery-retry]');
     assert.equal(await js('savedOpens.at(-1).id'),'saved');
     assert.deepEqual(await js('[nchatInput.value,nchatInput.selectionStart,nchatInput.selectionEnd]'),['keep this draft',2,6]);
-    await js('window.oldOpen=messages.querySelector("[data-delivery-open]");currentScope="owner-b";ChatDeliveries.handle(oldOpen,api);');
+    await js('window.oldOpen=messages.querySelector("[data-delivery-retry]");currentScope="owner-b";ChatDeliveries.handle(oldOpen,api);');
     assert.equal(await js('savedOpens.length'),1,'a retained card cannot open another account\'s saved delivery');
-    report.cases.push('Saved-file preview preserves the draft and selection; account changes reject retained cards');
+    report.cases.push('Locating a saved file in the library preserves the draft and selection; account changes reject retained cards');
 
     await js(`currentScope='owner-a';render(base.replace('data-delivery-final="true"','data-delivery-final="true" data-delivery-current="false"'),[{...site,changedInTurn:false},shot]);`);
-    await click('[data-delivery-open]');
+    assert.equal(await js('messages.querySelectorAll("[data-delivery-open]").length'), 0);
+    await click('[data-delivery-retry]');
     assert.equal(await js('savedOpens.length'),2);
     assert.equal(await js('nchatInput.value'),'keep this draft');
-    report.cases.push('Historical saved deliveries open without replacing the current conversation draft');
+    report.cases.push('Historical saved deliveries open in the library without replacing the current conversation draft');
 
     await js(`window.localCalls=[];window.localOpens=[];
       window.WorkspaceHost={open:async(name,options)=>{localOpens.push({name,options});return true}};

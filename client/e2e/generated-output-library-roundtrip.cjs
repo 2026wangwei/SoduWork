@@ -98,8 +98,8 @@ if (typeof electron === 'string') {
       const reopened = await reopen();
       await until("typeof finishLookup === 'function'");
       await js('paintHistory(); SoduWorkAPI.getLibraryDeliveryStatus=lookup; finishLookup(); void 0;');
-      await until("messages.querySelector('[data-delivery-open]')?.checkVisibility()");
-      assert.deepEqual(await js(visibleActions), [folder, '已保存到资料库，点击查看', '预览已保存版本']);
+      await until("messages.querySelector('[data-delivery-retry]')?.classList.contains('is-saved')");
+      assert.deepEqual(await js(visibleActions), [folder, '已保存到资料库，点击查看']);
       await captureCard('history-after-save');
       const saved = (await list()).items.find(item => item.sessionId === history.id);
       assert.ok(saved);
@@ -166,7 +166,7 @@ if (typeof electron === 'string') {
         assert.match(await js(`document.querySelector('[data-delivery-status]').textContent`), /Fixture disk write failed/);
       }
       await click(action); assert.equal(await js(`document.querySelector('${action}').classList.contains('is-saved')`), true);
-      if (!legacy) assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`), !['md','html','png','pdf'].includes(ext), ext + ' saved preview eligibility');
+      if (!legacy) assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`), 0, ext + ' saved card actions');
       const item = (await list()).items.find(item => item.sessionId === ext);
       assert.ok(item, 'Saved item appears in Recommended: ' + ext);
       assert.ok((await list('all')).items.some(row => row.id === item.id));
@@ -179,7 +179,7 @@ if (typeof electron === 'string') {
       await until(`document.querySelector('[data-library-select="${item.id}"]')`);
       assert.equal(await js(`document.body.innerText.includes(${JSON.stringify(item.filename)})`), true);
       await js('closeLibraryPanel();void 0;');
-      if (!legacy) { await js(read('components/panels/chat-deliveries.js') + '\nvoid 0;'); await render(ext); await until(`document.querySelector('${action}').classList.contains('is-saved')`); assert.equal(writes, written); assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`), !['md','html','png','pdf'].includes(ext), ext + ' restored preview eligibility'); }
+      if (!legacy) { await js(read('components/panels/chat-deliveries.js') + '\nvoid 0;'); await render(ext); await until(`document.querySelector('${action}').classList.contains('is-saved')`); assert.equal(writes, written); assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`), 0, ext + ' restored card actions'); }
       report.cases.push(ext + ': explicit save, exact bytes, recommended/all visibility, duplicate click, receipt restoration');
     }
     await render('bundle');

@@ -24,7 +24,7 @@ app.whenReady().then(async()=>{try{
   await win.loadFile(path.join(__dirname,'fixtures/requirements-board.html'));
   const styles=[...fs.readFileSync(path.join(client,'desk.html'),'utf8').matchAll(/<link\b[^>]*href="([^"]+\.css)"/g)].map(m=>m[1]);
   await js(`Promise.all(${JSON.stringify(styles.map(p=>pathToFileURL(path.join(client,p)).href))}.map(href=>new Promise(resolve=>{const link=document.createElement('link');link.rel='stylesheet';link.href=href;link.onload=link.onerror=resolve;document.head.append(link)})))`);
-  for(const file of ['components/panels/chat-deliveries.js','components/panels/chat-output-links.js','components/panels/library-transfer.js','components/panels/chat-acceptance-results.js'])await js(fs.readFileSync(path.join(client,file),'utf8'));
+  for(const file of ['components/panels/chat-dom-patch.js','components/panels/panels-chat-tools.js','components/panels/chat-composer-bindings.js','components/panels/chat-deliveries.js','components/panels/chat-output-links.js','components/panels/library-transfer.js','components/panels/chat-acceptance-results.js'])await js(fs.readFileSync(path.join(client,file),'utf8'));
   await js(`window.uiErrors=[];addEventListener('error',e=>uiErrors.push(e.message));document.body.innerHTML='<main class="nchat" style="width:780px;margin:24px auto"><div id="fixture"></div></main>';
     window.files=Array.from({length:5},(_,i)=>({artifactId:'art'+i,name:'deliverable-'+i+'.md',relative:'deliverable-'+i+'.md',primary:true,changedInTurn:true,kind:'document',size:120}));
     window.snapshot={status:'idle'};window.paint=()=>{document.querySelector('#fixture').innerHTML=ChatOutputLinks.decorate('<div class="nmsg ai" data-delivery-current="true" data-delivery-final="true" data-chat-node="message:1"><div class="nmd">完成交付</div></div>',files,'chat',snapshot)};paint();void 0;`);
@@ -68,6 +68,15 @@ app.whenReady().then(async()=>{try{
   report.checks.push('The review result stays expanded while its optional evidence remains inside an independently collapsible group');
   await js(`files=files.map((f,i)=>({...f,taskId:'task',attachmentId:'attachment-'+i,role:'output'}));document.querySelector('#fixture').innerHTML='<div class="nmsg ai" data-delivery-current="true" data-delivery-final="true" data-output-task="task"><div class="nmd">已完成</div></div>';LibraryTransfer.decorateOutputs(document.querySelector('#fixture'),files,'task-chat',{status:'idle'});void 0;`);
   assert.equal(await js(`document.querySelectorAll('.noutput-library-bundle').length`),1);
+  assert.equal(await js(`(()=>{
+    const group = document.querySelector('.noutput-library'), row = group.querySelector('.noutput-library-row');
+    const hit = ChatComposerBindings.outputPreviewButton;
+    const title = row.querySelector('.noutput-library-name');
+    return row.dataset.outputTaskId === 'task' && row.dataset.outputAttachmentId === 'attachment-0' &&
+      hit(row) === title && hit(row.querySelector('.noutput-library-file-icon')) === title && hit(title) === title &&
+      !hit(group) && !hit(row.querySelector('[data-library-output]')) && !hit(group.querySelector('[data-library-bundle]')) &&
+      !hit(group.querySelector('.noutput-library-more>summary'));
+  })()`),true,'Each requirement row opens its own result, with independent library and bundle controls');
   assert.equal(await js(`document.querySelectorAll('.noutput-library>.noutput-library-row').length`),3);
   assert.equal(await js(`document.querySelector('.noutput-library-more').open`),false);
   assert.ok((await disclosure('.noutput-library-more')).centerOffset<2);
@@ -96,6 +105,13 @@ app.whenReady().then(async()=>{try{
       await click('.noutput-library-more>summary');assert.equal((await disclosure('.noutput-library-more')).visible,0);
     }
   }
+  await js(`files=[{artifactId:'local-site',name:'index.html',kind:'website',changedInTurn:true,primary:true,
+    taskId:'task',attachmentId:'first-html',size:120}];fixture.innerHTML='<div class="nmsg ai" data-output-task="task"></div>';
+    LibraryTransfer.decorateOutputs(fixture,files,'task-chat',{status:'idle'});void 0;`);
+  assert.equal(await js(`ChatComposerBindings.outputPreviewButton(fixture.querySelector('.noutput-library')) === fixture.querySelector('.noutput-library-name')`),true);
+  await js(`LibraryTransfer.decorateOutputs(fixture,[{...files[0],attachmentId:'replacement'}],'task-chat',{status:'idle'});void 0;`);
+  assert.equal(await js(`fixture.querySelector('.noutput-library-row').dataset.outputAttachmentId`),'replacement',
+    'A new immutable attachment refreshes the click target even when filename, length and local ID are identical');
   report.checks.push('Local and task file lists use centered More and bottom Collapse controls; metadata refresh, keyboard input, three/four/twenty files and a narrow layout preserve the expected behavior');
   for (const remote of [false, true]) {
     await js(`files=['index.html','style.css','script.js','delivery.ZIP','readme.md'].map((name,i)=>({artifactId:'ordered-'+i,

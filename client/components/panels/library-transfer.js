@@ -335,14 +335,20 @@
         shown.add(identity(file));
         indexed.set(JSON.stringify([ref, key(file), version(file)]), { scope: scope(), file: { ...file } });
       });
-      const signature = JSON.stringify([ref, available.map(file => [identity(file), file.name || file.relative || '', file.contentType || ''])]);
+      const signature = JSON.stringify([ref, available.map(file => [identity(file), file.name || file.relative || '', file.contentType || '',
+        file.taskId || file.cloudTaskId, file.attachmentId || file.remoteAttachmentId, file.kind])]);
       if (group.dataset.libraryFiles !== signature) {
         const expanded = group.querySelector('.noutput-library-more')?.open;
         const rows = available.map(file => {
-        const fileKey = key(file);
-        const fileName = file.name || file.relative || '';
-        const fileIcon = global.SoduWorkLibraryFileIcons?.markup?.({ filename: fileName, contentType: file.contentType }) || '<span class="noutput-library-extension" aria-hidden="true">' + esc(fileName.split('.').pop().toUpperCase().slice(0, 5)) + '</span>';
-        return '<div class="noutput-library-row"><span class="noutput-library-file-icon" aria-hidden="true">' + fileIcon + '</span><button type="button" class="noutput-library-name" data-open-app="' + esc(fileKey) + '" data-user-content title="打开 ' + esc(fileName) + '">' + esc(fileName) + '</button>' + button(file, ref) + '</div>';
+          const fileName = file.name || file.relative || '';
+          const fileIcon = global.SoduWorkLibraryFileIcons?.markup?.({ filename: fileName, contentType: file.contentType }) || '<span class="noutput-library-extension" aria-hidden="true">' + esc(fileName.split('.').pop().toUpperCase().slice(0, 5)) + '</span>';
+          const taskId = file.taskId || file.cloudTaskId, attachmentId = file.attachmentId || file.remoteAttachmentId;
+          const receipt = taskId && attachmentId ? ' data-output-task-id="' + esc(taskId) + '" data-output-attachment-id="' + esc(attachmentId) + '"' : '';
+          const kind = global.ChatTools?.previewKind?.(file);
+          const preview = kind && kind !== 'external' ? ' data-preview-file' : '';
+          return '<div class="noutput-library-row"' + receipt + '><span class="noutput-library-file-icon" aria-hidden="true">' + fileIcon +
+            '</span><button type="button" class="noutput-library-name"' + preview + ' data-open-app="' + esc(key(file)) + '" data-user-content title="打开 ' + esc(fileName) + '">' +
+            esc(fileName) + '</button>' + button(file, ref) + '</div>';
         });
         const taskIds = new Set(available.map(file => file.taskId).filter(Boolean));
         const bundle = available.length >= 2 && taskIds.size === 1 && available.every(file => file.taskId)

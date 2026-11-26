@@ -86,7 +86,7 @@ if (typeof electron === 'string') {
     await click(card + ' [data-delivery-retry]');
     await until(() => js('Boolean(window.savedPayload)'), 'upload to fixture library');
     assert.equal(Buffer.from(await js('savedPayload.data'), 'base64').toString(), contents('Second round'));
-    await until(() => js(`document.querySelector(${JSON.stringify(card + ' [data-delivery-open]')}).hidden === false`), 'saved delivery actions');
+    await until(() => js(`document.querySelector(${JSON.stringify(card + ' [data-delivery-retry]')}).classList.contains('is-saved')`), 'saved delivery actions');
     fs.writeFileSync(file, contents('Later workspace edit'));
     await click(heading);
     await until(() => js('ChatWorkbench.state().open'), 'saved card reopens preview');

@@ -63,7 +63,7 @@
   const ICONS = global.ChatWorkbenchIcons || info.ICONS || {};
   const WB = {
     root: null, context: null, open: false, maximized: false, manualClosed: false, autoOpened: false,
-    autoPreviewed: false, autoPreviewKey: '', settledTurn: '',
+    autoPreviewed: false, autoPreviewKey: '', settledTurn: '', pendingPreviews: new Map(),
     active: '', files: [], summaryFiles: [], changes: [], services: [], tabs: [], states: Object.create(null),
     signature: '', seq: 0, epoch: 0, previewKey: '', previewText: '', previewError: '', previewLoading: false,
     fileChanges: null, editor: null, editorDrafts: Object.create(null), editorDirty: false,
@@ -214,25 +214,34 @@
       if (reply?.ok === false) throw Error(reply.reason || '文件暂时不可用');
     } catch (error) { if (current()) global.petSay?.(error.message || '文件暂时不可用'); }
   }
-  function openPendingCloud(file, activate = true, automatic = false) {
-    if (!file?.cloudPending || !links?.materialize) return false;
-    const ref = context().ref, current = previewOwner();
-    const id = fileKey(file), activeId = WB.active, request = {};
-    if (!WB.openingTaskFiles) WB.openingTaskFiles = new Set();
-    const opening = WB.openingTaskFiles;
-    if (opening.has(id)) return true;
-    opening.add(id);
-    if (activate) { WB.cloudOpenRequest = request; WB.manualClosed = false; }
-    links.materialize(file, sessionApi(), ref, { previewOnly: automatic }).then(local => {
+  function materializePreview(file, materialize, activate, automatic) {
+    const id = fileKey(file), pending = WB.pendingPreviews;
+    const existing = pending.get(id);
+    const request = existing || { automatic };
+    // Reuse the bytes in flight, but let an explicit click after closing or
+    // changing tabs take focus again. A later manual close still wins.
+    if (activate && (!existing || !automatic)) {
+      WB.cloudOpenRequest = request;
+      WB.manualClosed = false;
+      request.active = WB.active;
+      request.automatic = automatic;
+    }
+    if (existing) return true;
+    pending.set(id, request);
+    const current = previewOwner();
+    materialize(file, sessionApi(), context().ref, { previewOnly: automatic }).then(local => {
       if (!current()) return;
       WB.files = WB.files.map(item => fileKey(item) === id ? local : item);
-      const shouldActivate = activate && WB.cloudOpenRequest === request && WB.active === activeId && !WB.manualClosed;
-      const tab = openFile(local, shouldActivate, automatic);
+      const focus = WB.cloudOpenRequest === request && WB.active === request.active && !WB.manualClosed;
+      const tab = openFile(local, focus, request.automatic);
       if (tab) tab.autoPreview = false;
       paint();
-    }).catch(error => { if (current()) global.petSay?.(error.message || '云端成果暂时无法打开'); })
-      .finally(() => opening.delete(id));
+    }).catch(error => { if (current()) global.petSay?.(error.message || '成果暂无法打开'); })
+      .finally(() => pending.delete(id));
     return true;
+  }
+  function openPendingCloud(file, activate = true, automatic = false) {
+    return Boolean(file?.cloudPending && links?.materialize && materializePreview(file, links.materialize, activate, automatic));
   }
   function openTaskPdfPreview(file) {
     // Canvas renderers disable plugins, so PDFs would download instead of displaying.
@@ -255,22 +264,7 @@
     const kind = previewKind(file);
     if (kind === 'pdf') return openTaskPdfPreview(file);
     if (kind !== 'web' || !links?.materializeTask) return false;
-    if (!WB.openingTaskFiles) WB.openingTaskFiles = new Set();
-    const id = fileKey(file), opening = WB.openingTaskFiles, activeId = WB.active, request = {};
-    if (opening.has(id)) return true;
-    opening.add(id);
-    if (activate) { WB.cloudOpenRequest = request; WB.manualClosed = false; }
-    const ref = context().ref, current = previewOwner();
-    links.materializeTask(file, sessionApi(), ref, { previewOnly: automatic }).then(local => {
-      if (!current()) return;
-      WB.files = WB.files.map(item => fileKey(item) === id ? local : item);
-      const shouldActivate = activate && WB.cloudOpenRequest === request && WB.active === activeId && !WB.manualClosed;
-      const tab = openFile(local, shouldActivate, automatic);
-      if (tab) tab.autoPreview = false;
-      paint();
-    }).catch(error => { if (current() && typeof global.petSay === 'function') global.petSay(error.message || '成果暂无法保存到本地'); })
-      .finally(() => opening.delete(id));
-    return true;
+    return materializePreview(file, links.materializeTask, activate, automatic);
   }
   function openFile(file, activate, automatic = false) {
     if (automatic && !canAutoPreview(file)) return null;
@@ -303,14 +297,24 @@
   }
   function openOutput(target, { source } = {}) {
     const value = String(target || '');
-    const files = source && !value.startsWith('version:') ? links.scoped(source, WB.files) : WB.files;
-    let file = files.find((item) => fileKey(item) === value || item.path === value);
-    if (!file && source?.closest('[data-delivery]')) {
+    if (!value) return false;
+    const row = source?.closest('.noutput-library-row');
+    const cardAttachment = row && links.taskOutputId(row.dataset?.outputTaskId, row.dataset?.outputAttachmentId);
+    const files = source && (cardAttachment || !value.startsWith('version:')) ? links.scoped(source, WB.files) : WB.files;
+    const remoteId = cardAttachment || (value.startsWith('task-output:') ? value : '');
+    // Materialization replaces the placeholder key with a local path or artifact ID.
+    // The Hub task and attachment pair still identifies exactly the same bytes.
+    const attachmentKey = item => links.taskOutputId(item.cloudTaskId || item.taskId, item.remoteAttachmentId || item.attachmentId);
+    const candidates = remoteId ? files.filter(item => attachmentKey(item) === remoteId) : files;
+    let file = candidates.find(item => fileKey(item) === value || item.path === value);
+    if (!file && remoteId && candidates.length === 1) file = candidates[0];
+    if (!file && (row || source?.closest('[data-delivery]'))) {
       // A live card keeps its upload ID after the turn is archived. Resolve the
       // preview against that reply's immutable bytes, even after closing its tab.
       const owner = source.closest('[data-output-task]')?.dataset;
       const archiveIds = new Set((owner?.deliveryArchiveIds || '').split(' '));
       const versions = files.filter(item => item.versionId && item.originalArtifactId === value &&
+        (!remoteId || !attachmentKey(item) || attachmentKey(item) === remoteId) &&
         ((owner?.deliveryTurn && item.turnId === owner.deliveryTurn) || archiveIds.has(item.artifactId)));
       if (versions.length === 1) file = versions[0];
     }
@@ -947,7 +951,7 @@
       visibilityObserver: null, unlisten: null, unlistenElement: null };
     Object.assign(WB, {
       open: false, maximized: false, manualClosed: false, autoOpened: false,
-      autoPreviewed: false, autoPreviewKey: '', settledTurn: '',
+      autoPreviewed: false, autoPreviewKey: '', settledTurn: '', pendingPreviews: new Map(),
       active: '', files: [], summaryFiles: [], changes: [], services: [],
       tabs: [], states: Object.create(null), signature: '', previewKey: '', previewText: '', previewError: '',
       previewRequest: null, cloudOpenRequest: null, openingTaskFiles: new Set(),

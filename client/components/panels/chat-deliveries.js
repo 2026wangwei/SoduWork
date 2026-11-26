@@ -22,7 +22,7 @@
     preparing: '\u6b63\u5728\u51c6\u5907\u6210\u679c', saved: '\u5df2\u4fdd\u5b58',
     savedCrossDevice: '\u5df2\u540c\u6b65 \u00b7 \u53ef\u8de8\u8bbe\u5907\u67e5\u770b',
     collecting: '\u6b63\u5728\u6536\u96c6', retry: '\u91cd\u8bd5\u540c\u6b65',
-    save: '\u4fdd\u5b58\u5230\u8d44\u6599\u5e93', openSaved: '\u9884\u89c8\u5df2\u4fdd\u5b58\u7248\u672c',
+    save: '\u4fdd\u5b58\u5230\u8d44\u6599\u5e93',
     structure: '\u4fdd\u7559\u76ee\u5f55\u7ed3\u6784',
     localSaved: '\u6587\u4ef6\u5728\u672c\u673a \u00b7 \u5df2\u4fdd\u5b58\u5230\u8d44\u6599\u5e93',
     localFiles: '\u6587\u4ef6\u5728\u672c\u673a',
@@ -33,7 +33,6 @@
   const saveIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 18.25h9a4.25 4.25 0 0 0 .56-8.46A5.75 5.75 0 0 0 6.2 8.5a4.9 4.9 0 0 0 1.3 9.75Z"/><path d="M12 16V9.5m-2.5 2.5L12 9.5l2.5 2.5"/></svg>';
   const savedIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4L19 6"/></svg>';
   const tx = source => global.SoduWorkI18n?.t(source, source) || source;
-  const previewIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
   const action = (attr, label, glyph, hidden = false) => '<button type="button" class="ndelivery-action" ' + attr +
     (hidden ? ' hidden' : '') + ' aria-label="' + esc(label) + '" title="' + esc(label) + '">' + glyph + '<span class="ndelivery-action-label">' + label + '</span></button>';
   function icon(file) {
@@ -296,7 +295,7 @@
     const card = deliverySection(doc, '<header>' + deliveryHeading(available, count > 1 || /\.zip$/i.test(first.name || '')) +
       '<div class="ndelivery-actions">' + action('data-delivery-reveal', '打开所在位置', folderIcon) +
       action('data-delivery-archive', '打开压缩包', archiveIcon, count < 2 && !/\.zip$/i.test(first.name || '')) +
-      action('data-delivery-retry', text.save, saveIcon) + action('data-delivery-open', text.openSaved, previewIcon, true) +
+      action('data-delivery-retry', text.save, saveIcon) +
       action('data-delivery-local', '在本地继续', localIcon, !group.remote) +
       '</div></header>' +
       '<details class="ndelivery-files" open><summary data-delivery-count>' + count + ' ' + text.files + '</summary><div data-delivery-file-list></div></details>' +
@@ -406,20 +405,11 @@
     const kind = global.ChatTools?.previewKind?.(file);
     return Boolean(kind && kind !== 'external');
   }
-  function canPreviewSaved(group, delivery) {
-    if (!delivery || group.files.length !== 1) return false;
-    const rows = delivery.files || group.files;
-    if (rows.length !== 1) return false; // Multi-file results are displayed as ZIP packages.
-    const file = group.files[0];
-    const savedFile = { ...file, name: delivery.filename || rows[0].path || file.name };
-    // Saving changes storage, not preview support. Use the same policy as the chat workbench.
-    return canPreviewFile(file) && canPreviewFile(savedFile);
-  }
   function paint(card, group) {
     const job = jobs.get(group.id), result = job?.delivery || group.delivery;
     const status = card.querySelector('[data-delivery-status]');
     if (status) status.textContent = job?.localError
-      ? job.localError + (job.localUnavailable && result ? ' · ' + text.openSaved : '')
+      ? job.localError + (job.localUnavailable && result ? ' · ' + tx('已保存到资料库，点击查看') : '')
       : job?.error ? (text.title + ' · ' + text.retry + ' · ') + job.error
       : result ? (result.storage === 'local' || !group.remote ? text.localSaved : text.savedCrossDevice)
       : job?.busy ? (group.remote ? text.collecting : text.preparing) : (group.remote ? text.collecting : text.localFiles);
@@ -430,10 +420,8 @@
         .map(value => document.createTextNode(value)));
     }
     const retry = card.querySelector('[data-delivery-retry]');
-    const open = card.querySelector('[data-delivery-open]');
     card.classList.toggle('has-error', Boolean(job?.localError || job?.error));
     card.classList.toggle('is-busy', Boolean(job?.busy));
-    if (open) { open.hidden = !canPreviewSaved(group, result); open.classList.toggle('is-saved', Boolean(result)); }
     if (retry) {
       retry.hidden = false;
       retry.disabled = Boolean(job?.busy);
@@ -693,22 +681,6 @@
       } else if (!input && typeof global.NativeChat?.focusComposer === 'function') global.NativeChat.focusComposer(group.ref);
       else { global.petSay?.('请打开这份成果所属的会话后继续'); return true; }
       if (group.remote) global.dispatchEvent?.(new CustomEvent('soduwork-cloud-delivery-continue', { detail: { taskId: group.taskId, ref: group.ref } }));
-      return true;
-    }
-    if (node.closest('[data-delivery-open]')) {
-      const delivery = jobs.get(group.id)?.delivery || group.delivery;
-      if (!canPreviewSaved(group, delivery)) return true;
-      if (delivery?.id?.startsWith('local-')) {
-        try { await global.LibraryTransfer.openSavedItem(delivery, { preview: true }); }
-        catch (error) { if (group.scope === scope()) global.petSay?.(error.message); }
-        return true;
-      }
-      if (delivery && !(global.ChatWorkbench?.openSavedDelivery || global.LibraryDelivery?.open)?.(delivery.id, { title: delivery.title || group.files[0]?.title || '已保存版本', openLocal: async () => {
-        await materialize(group, api);
-        if (group.scope !== scope()) throw Error('账号已变化，请重新打开成果');
-        const result = await api.openLocalDelivery(group.ref, group.files.map(f => f.artifactId).filter(Boolean));
-        if (!result?.ok) throw Error(result?.reason || '本地成果暂时不可用');
-      } })) global.petSay?.('请在对话预览区域中打开已保存版本');
       return true;
     }
     if (node.closest('[data-delivery-retry]')) {
