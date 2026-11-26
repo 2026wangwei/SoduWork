@@ -17,7 +17,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import Json
+from pydantic import Json, ValidationError, WrapValidator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -151,14 +151,23 @@ async def get_tasks(client: Client = Depends(current_client), session: AsyncSess
     return await svc.list_tasks(session, client.id, include_related=True, page=window)
 
 
+def _validate_task_create(data, handler):
+    try:
+        return handler(data)
+    except ValidationError as exc:
+        # Preserve the existing 400 for an omitted title. Other invalid fields
+        # still receive FastAPI's normal validation response.
+        errors = exc.errors()
+        if len(errors) == 1 and errors[0]["loc"] == ("title",) and errors[0]["type"] == "missing":
+            raise HTTPException(status_code=400, detail="请填写需求标题") from None
+        raise
+
+
 @router.post("/tasks")
 async def create_task(
-    body: TaskCreate, client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)
+    body: Annotated[TaskCreate, WrapValidator(_validate_task_create)],
+    client: Client = Depends(current_client), session: AsyncSession = Depends(get_session),
 ):
-    # An omitted title used to fall through to the schema default "未命名" while an explicit empty
-    # string was rejected, so a dropped request body silently produced placeholder requirements.
-    if "title" not in body.model_fields_set:
-        raise HTTPException(status_code=400, detail="请填写需求标题")
     return await svc.create_task(session, client.id, body.model_dump(), origin="local")
 
 

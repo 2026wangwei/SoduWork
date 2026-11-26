@@ -392,6 +392,8 @@ async def update_environment(
     user: User = Depends(require_perm("environment.manage")),
     session: AsyncSession = Depends(get_session),
 ):
+    """Update environment settings. Clients may omit orgId or echo the current
+    department. A different orgId returns 422 and no settings are changed."""
     row = await session.get(am.Environment, eid)
     if row is None:
         raise HTTPException(status_code=404, detail="环境不存在")

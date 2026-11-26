@@ -69,10 +69,15 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         return response.json()
 
     async def test_create_task_rejects_missing_or_blank_title(self):
-        for body in ({}, {"title": ""}, {"title": "  "}):
+        schemas = self.app.openapi()["components"]["schemas"]
+        self.assertIn("title", schemas["TaskCreate"]["required"])
+        self.assertNotIn("default", schemas["TaskCreate"]["properties"]["title"])
+        self.assertNotIn("title", schemas["TaskSyncCreate"].get("required", []))
+        for body in ({}, {"title": ""}, {"title": "  "}, {"assigneeUserId": "missing"}):
             with self.subTest(body=body):
                 result = await self.request("POST", "tasks", 400, json=body)
                 self.assertEqual(result["detail"], "请填写需求标题")
+        await self.request("POST", "tasks", 422, json={"due": True})
         async with self.sessions() as session:
             self.assertEqual(await session.scalar(select(func.count()).select_from(models.Task)), 0)
 

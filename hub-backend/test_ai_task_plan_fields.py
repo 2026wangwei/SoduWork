@@ -18,6 +18,17 @@ class PlanFieldTests(unittest.TestCase):
         self.assertEqual(plan["repo"], "")
         self.assertTrue(plan["parallelOk"])
 
+    def test_unicode_field_spacing_stays_on_the_same_line(self):
+        for newline in ("\n", "\r\n"):
+            for space in ("\u3000", "\u00a0"):
+                with self.subTest(newline=newline, space=space):
+                    text = newline.join(["### 里程碑 1", f"{space}标题{space}：上线",
+                                         f"{space}验收：{space}", f"工程{space}：backend",
+                                         f"{space}可并行：是"])
+                    self.assertEqual(parse_plan(text), [
+                        {"title": "上线", "accept": "", "repo": "backend", "parallelOk": True},
+                    ])
+
     def test_blank_parallel_field_does_not_consume_following_prose(self):
         plan = self.parse("工程：-\n可并行：\n可以在完成后继续下一步")
         self.assertFalse(plan["parallelOk"])
