@@ -16,7 +16,7 @@
     const label = [title, location, status].filter(Boolean).join(' · ');
     const separator = '<span class="automation-runtime-separator"> · </span>';
     return '<option value="' + esc(agent.id) + '"' + (String(agent.id) === selected ? ' selected' : '') +
-      ' aria-label="' + esc(label) + '" title="' + esc(label) + '">' +
+      (agent.disabled ? ' disabled' : '') + ' aria-label="' + esc(label) + '" title="' + esc(label) + '">' +
       '<span class="automation-runtime-name">' + esc(title) + '</span>' +
       (location ? separator + '<span class="automation-runtime-location">' + esc(location) + '</span>' : '') +
       (status ? separator + '<span class="automation-runtime-status">' + esc(status) + '</span>' : '') + '</option>';

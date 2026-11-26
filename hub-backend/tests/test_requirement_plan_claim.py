@@ -36,7 +36,8 @@ class RequirementPlanClaimTests(unittest.IsolatedAsyncioTestCase):
         })
         patches = [
             patch.object(ai_exec, "load", AsyncMock(return_value={})),
-            patch.object(ai_exec, "enabled", return_value=True),
+            patch.object(ai_exec, "resolve_default_sync", return_value={
+                "id": "runner:owner-runner:pi", "clientId": "owner", "runnerId": "owner-runner"}),
             patch.object(ai_exec, "collect_task_context", AsyncMock(side_effect=collect, return_value={})),
             patch.object(task_api, "_resolve_repo", AsyncMock(return_value=None)),
             patch.object(task_api, "_settle_work_dir", AsyncMock(return_value={"ok": True, "dir": "isolated", "workRoot": "isolated"})),

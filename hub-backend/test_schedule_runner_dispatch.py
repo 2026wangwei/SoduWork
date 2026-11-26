@@ -384,6 +384,114 @@ class ScheduleRunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runs), 2)
         self.assertEqual([run.state for run in runs], ['failed', 'failed'])
 
+    async def test_employee_schedule_rejects_sibling_target_online_or_offline(self):
+        peer = models.Client(id="peer", user_ref="owner", auth_state="active")
+        self.session.add_all([peer, am.RunnerNode(id="desktop", client_id="device")])
+        await self.session.commit()
+        body = {"title": "Pinned plan", "assigneeId": "runner:desktop:codex",
+                "ownerClientId": "device", "deviceBoundRunner": False}
+        for online in (True, False):
+            if not online:
+                runner_hub._RUNNERS.clear()
+            result = await personal_schedules.preflight_my_schedule(body, peer, self.session)
+            self.assertEqual(result["state"], "blocked", result)
+            with self.assertRaises(HTTPException) as rejected:
+                await personal_schedules.create_my_schedule(body, peer, self.session)
+            self.assertEqual(rejected.exception.status_code, 409)
+        self.assertEqual(len(list(await self.session.scalars(select(models.AiSchedule)))), 1)
+        result = await personal_schedules.preflight_my_schedule(body, self.client, self.session)
+        self.assertEqual(result["state"], "waiting", result)
+        saved = await personal_schedules.create_my_schedule(body, self.client, self.session)
+        self.assertIs(saved["isOriginDevice"], True)
+        self.assertNotIn("ownerClientId", saved)
+        plan = await self.session.get(models.AiSchedule, saved["id"])
+        self.assertTrue(plan.device_bound_runner)
+        self.assertEqual(plan.assignee_id, "runner:desktop:codex")
+
+    async def test_scoped_cloud_plan_keeps_device_check_in_the_durable_handoff(self):
+        await self.cloud_target()
+        saved = await personal_schedules.create_my_schedule(
+            {"title": "Cloud plan", "assigneeId": "runner:cloud:codex"},
+            self.client, self.session)
+        plan = await self.session.get(models.AiSchedule, saved["id"])
+        ready = await personal_schedules.preflight_my_schedule(
+            {"id": plan.id}, self.client, self.session)
+        self.assertEqual(ready["state"], "ready", ready)
+        with patch.object(task_dispatch, "dispatch", AsyncMock(return_value={"ok": True, "ref": "test-cloud"})):
+            result = await schedules.execute_one(self.session, plan, trigger="timer", idempotency_key="cloud")
+        self.assertTrue(result["ok"], result)
+        handoff = await self.session.scalar(select(ConversationHandoff))
+        self.assertIs(handoff.source["deviceBoundRunner"], True)
+        self.assertEqual(handoff.options["targetRunnerId"], "cloud")
+
+    async def test_device_bound_timer_rechecks_saved_target_without_fallback(self):
+        self.session.add(am.RunnerNode(id="desktop", client_id="device"))
+        await self.session.commit()
+        saved = await personal_schedules.create_my_schedule(
+            {"title": "One device", "assigneeId": "runner:desktop:codex"}, self.client, self.session)
+        plan = await self.session.get(models.AiSchedule, saved["id"])
+        result = await schedules.execute_one(self.session, plan, trigger="timer", idempotency_key="first")
+        self.assertTrue(result["ok"], result)
+        first_id = result["scheduleRunId"]
+        # Simulate deleting and recreating the same Runner id on another desktop.
+        peer = models.Client(id="peer", user_ref="owner", auth_state="active")
+        self.session.add(peer)
+        (await self.session.get(am.RunnerNode, "desktop")).client_id = peer.id
+        await self.session.commit()
+        for trigger, live_id in (("timer", "device"), ("retry", "peer")):
+            self.runner.client_id = live_id
+            result = await schedules.execute_one(self.session, plan, trigger=trigger, idempotency_key=trigger)
+            self.assertFalse(result["ok"], result)
+            self.assertIn("当前设备", result["error"])
+            run = await self.session.get(models.AiScheduleRun, result["scheduleRunId"])
+            self.assertNotIn("conversationInput", run.receipt)
+        original = await self.session.get(models.AiScheduleRun, first_id)
+        self.assertEqual(original.state, "waiting")
+        self.assertIn("conversationInput", original.receipt)
+        self.assertIsNone(await self.session.scalar(select(ConversationHandoff)))
+        self.assertFalse(self.calls)
+
+    async def test_peer_can_review_pause_and_delete_but_cannot_launch_or_change_plan(self):
+        peer = models.Client(id="peer", user_ref="owner", auth_state="active")
+        self.session.add(peer)
+        self.schedule.enabled = True
+        await self.session.commit()
+        result = await personal_schedules.my_schedules(peer, self.session)
+        self.assertEqual([(r["id"], r["isOriginDevice"]) for r in result], [("schedule", False)])
+        self.assertNotIn("ownerClientId", result[0])
+        for attempt in ({"assigneeId": "local:pi"}, {"note": "execute other work"},
+                        {"atHour": 5}, {"enabled": False, "note": "smuggled"}):
+            with self.assertRaises(HTTPException) as rejected:
+                await personal_schedules.update_my_schedule("schedule", attempt, peer, self.session)
+            self.assertEqual(rejected.exception.status_code, 409)
+        for attempt in ({}, {"instanceId": "second-worker"}):
+            with self.assertRaises(HTTPException) as rejected:
+                await personal_schedules.run_my_schedule("schedule", attempt, peer, self.session)
+            self.assertEqual(rejected.exception.status_code, 409)
+        self.assertIsNone(await self.session.scalar(select(models.AiScheduleRun)))
+        paused = await personal_schedules.update_my_schedule("schedule", {"enabled": False}, peer, self.session)
+        self.assertFalse(paused["enabled"])
+        with self.assertRaises(HTTPException) as rejected:
+            await personal_schedules.update_my_schedule("schedule", {"enabled": True}, peer, self.session)
+        self.assertEqual(rejected.exception.status_code, 409)
+        await personal_schedules.update_my_schedule("schedule", {"enabled": True}, self.client, self.session)
+        original = await personal_schedules.run_my_schedule("schedule", {"instanceId": "original"},
+                                                           self.client, self.session)
+        self.assertTrue(original["conversationInput"])
+        history = await personal_schedules.my_schedule_runs("schedule", 20, peer, self.session)
+        self.assertEqual([row["id"] for row in history["items"]], [original["scheduleRunId"]])
+        await personal_schedules.delete_my_schedule("schedule", peer, self.session)
+        self.assertEqual(await personal_schedules.my_schedules(peer, self.session), [])
+
+    async def test_native_preflight_cannot_substitute_online_sibling_for_offline_owner(self):
+        self.runner.client_id = "peer"
+        self.session.add(models.Client(id="peer", user_ref="owner", auth_state="active"))
+        await self.session.commit()
+        result = await self.preflight()
+        self.assertEqual(result["state"], "waiting", result)
+        self.assertNotIn("machine", result)
+        self.assertFalse(self.calls)
+
     async def test_peer_device_preflight_retains_the_original_execution_identity(self):
         self.schedule.assignee_id = "runner:desktop:codex"
         peer = models.Client(id="peer", user_ref="owner", auth_state="active")

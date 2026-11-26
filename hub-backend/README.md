@@ -310,11 +310,13 @@ matching application before upgrading.
 
 ## Database configuration
 
-Run `alembic upgrade head` from the backend directory. The single Alembic head,
-`0094_merge_proxy_peer_identity`, merges `0093_proxy_usage_shadow` and
-`0093_device_peer_identity`. From either revision, Alembic applies the missing
-revision and then the merge. Existing proxy observations and enrolled peer keys
-are preserved.
+Run `alembic upgrade head` from the backend directory. Revision
+`0095_schedule_device_scope` follows `0094_merge_proxy_peer_identity` and records
+device-scoped Runner selection for newly created personal schedules and explicit
+target changes. Existing schedules retain their configured execution targets.
+Other devices on the same account can review, pause or delete a plan. Editing,
+enabling or running it immediately requires the original device. Downgrade is
+available until the first device-scoped schedule is saved.
 
 Domain ordering accepts signed 32-bit integers and legacy decimal strings.
 Malformed values, booleans, fractions and overflow return HTTP 400 before any

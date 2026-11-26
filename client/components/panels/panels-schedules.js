@@ -194,6 +194,7 @@ function openSchedulePanel(options) {
     if (request !== _schLoadRequest || !wanted || !p.classList.contains('show') || p.dataset.scheduleFocus !== wanted) return;
     p.dataset.scheduleFocus = '';
     const row = (_schRows || []).find(item => String(item.id) === wanted);
+    if (row?.isOriginDevice === false) return _schToggleRuns(wanted, true);
     if (row) _schOpenEditor(row);
     else if (typeof petSay === 'function') petSay(_schLoadError || '关联的自动化已移除或当前账号无权访问');
   });
@@ -354,6 +355,7 @@ async function _schAct(act, sid, btn) {
   const scope = _schScope;
   const s = (_schRows || []).find(x => x.id === sid);
   if (!s) return;
+  if (s.isOriginDevice === false && (act === 'run' || act === 'edit' || act === 'toggle' && !s.enabled)) return;
   if (act === 'runs') { await _schToggleRuns(sid, false, btn); return; }
   if (act === 'edit') {
     await _schPrepareEditor(s, btn);
@@ -900,8 +902,9 @@ function _wireSchForm() {
       if (typeof petSay === 'function') petSay('给它起个名字吧');
       return;
     }
-    if (!body.assigneeId) {
-      if (typeof petSay === 'function') petSay('先选把活交给谁'); return;
+    const savedAssignee = _schEditing?.id && _schEditing.assigneeId === body.assigneeId;
+    if (!body.assigneeId || !savedAssignee && !_schAgents.some(agent => agent.id === body.assigneeId)) {
+      if (typeof petSay === 'function') petSay('所选执行底座当前不可用，请刷新后重试'); return;
     }
     if (_schModelCatalogError && _schLocalModelAgent(_schAgents.find(item => item.id === body.assigneeId))) {
       if (typeof petSay === 'function') petSay('本地模型配置暂时无法读取，请刷新后重试'); return;

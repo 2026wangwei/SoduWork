@@ -561,6 +561,41 @@
       return !!(r && r.ok);
     } catch (e) { if (registrationBoundaryError(e)) throw e; return false; }
   }
+  // Earlier Hubs also returned same-account work computers in the task directory.
+  // Independent cloud seats have no desktop client binding.
+  function currentExecutionSeat(seat) {
+    if (!seat) return false;
+    var owner = String(seat.clientId || '');
+    if (owner) return owner === device();
+    return seat.runnerKind !== 'work-computer' && seat.isWorkComputer !== true;
+  }
+  function deviceExecutionOptions(options) {
+    if (!options) return options;
+    var groups = (options.substrates || []).flatMap(function (group) {
+      if (!group?.locations?.length) return currentExecutionSeat(group) ? [group] : [];
+      var locations = group.locations.filter(currentExecutionSeat);
+      if (!locations.length) return [];
+      if (locations.length === group.locations.length) return [group];
+      // The old contract reports capability sets in seat order. A removed seat
+      // must not lend capabilities, recommendations or counts to a remaining one.
+      var sets = (group.capabilitySets || []).filter(function (_, i) { return currentExecutionSeat(group.locations[i]); });
+      var required = group.requiredCapabilities || [];
+      var compatible = !required.length || group.capabilitySets?.length === group.locations.length &&
+        sets.some(caps => required.every(cap => caps.includes(cap)));
+      var available = compatible ? group.available ?? true : false;
+      var modes = new Set(locations.map(location => location.mode));
+      var ids = locations.map(location => location.assigneeId || location.id);
+      return [{ ...group, locations, assigneeIds: ids, defaultAssigneeId: ids[0], available,
+        status: compatible ? group.status : 'blocked', capabilitySets: sets, onlineSeats: locations.length,
+        busySeats: locations.filter(seat => seat.busy).length,
+        machines: [...new Set(locations.map(seat => seat.host).filter(Boolean))],
+        versions: [...new Set(locations.map(seat => seat.version).filter(Boolean))],
+        locationMode: modes.size === 1 ? locations[0].mode : 'mixed',
+        locationLabel: modes.size === 1 ? locations[0].label : group.locationLabel }];
+    });
+    return { ...options, substrates: groups,
+      ...(options.executionTargets ? { executionTargets: options.executionTargets.filter(currentExecutionSeat) } : {}) };
+  }
   async function localRunnerReason() {
     try {
       if (!window.soduWorkAPI || !window.soduWorkAPI.runnerStatus) return '';
@@ -1573,7 +1608,9 @@
     async listAIAgents() {
       try {
         var v = await jfetch('/ai-agents') || { agents: [], squads: [] };
-        if (!(v.agents || []).length) v.reason = await localRunnerReason() || v.reason;
+        v.agents = (v.agents || []).filter(currentExecutionSeat);
+        if (String(v.default?.id || '').startsWith('runner:') && !v.agents.some(agent => agent.id === v.default.id)) v.default = null;
+        if (!v.agents.length) v.reason = await localRunnerReason() || v.reason;
         mark(true); return v;
       }
       catch (e) { markFromError(e); return { agents: [], squads: [], reason: '拿不到 AI 清单（后台没连上）' }; }
@@ -1633,7 +1670,7 @@
       if (r && r.ok === false) {
         throw new Error(r.reason || r.error || r.message || '执行方式暂时无法加载');
       }
-      return r || { repos: [], workflows: [], substrates: [], models: [], modelOptions: [],
+      return deviceExecutionOptions(r) || { repos: [], workflows: [], substrates: [], models: [], modelOptions: [],
         defaultModel: '', recommendation: {} };
     },
     /*

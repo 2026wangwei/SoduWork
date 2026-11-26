@@ -766,6 +766,7 @@
     "取消修改": "Cancel changes",
     "保存修改": "Save changes",
     "修改自动化": "Edit automation",
+    "在其他设备执行": "Runs on another device",
     "停用自动化": "Disable automation",
     "自动化已停用": "Automation disabled",
     "已停止后续自动触发，可在自动化管理中重新启用。": "Future automatic runs are disabled. You can enable them in automation management.",

@@ -29,7 +29,7 @@ from app.schema_migrations import (
 
 OLD_MERGE = "0067_merge_release_account_ownership"
 CANONICAL_MERGE = "0067_merge_account_ownership"
-CURRENT_HEAD = "0094_merge_proxy_peer_identity"
+CURRENT_HEAD = "0095_schedule_device_scope"
 
 
 class IntegratedMigrationHistoryTests(unittest.TestCase):
@@ -67,6 +67,29 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
         with Operations.context(context), context.begin_transaction():
             context.run_migrations()
         return output.getvalue()
+
+    def test_device_scope_upgrade_keeps_legacy_targets_and_supports_safe_downgrade(self):
+        import importlib
+        migration = importlib.import_module("migrations.versions.0095_schedule_device_scope")
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE ai_schedule (id TEXT PRIMARY KEY, assignee_id TEXT)"))
+                conn.execute(text("INSERT INTO ai_schedule VALUES ('legacy', 'runner:pinned:codex')"))
+                with Operations.context(MigrationContext.configure(conn)):
+                    migration.upgrade()
+                    self.assertEqual(conn.execute(text("SELECT * FROM ai_schedule")).one(),
+                                     ("legacy", "runner:pinned:codex", 0))
+                    migration.downgrade()
+                    self.assertEqual(conn.execute(text("SELECT * FROM ai_schedule")).one(),
+                                     ("legacy", "runner:pinned:codex"))
+                    migration.upgrade()
+                    conn.execute(text("UPDATE ai_schedule SET device_bound_runner = TRUE"))
+                    with self.assertRaisesRegex(RuntimeError, "device scope"):
+                        migration.downgrade()
+                    self.assertEqual(conn.scalar(text("SELECT device_bound_runner FROM ai_schedule")), 1)
+        finally:
+            engine.dispose()
 
     def test_postgres_expands_version_column_before_writing_permanent_merge_id(self):
         sql = self.merge_context("postgresql")
@@ -108,6 +131,7 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
         script = ScriptDirectory.from_config(_config())
         self.assertEqual(script.get_heads(), [CURRENT_HEAD])
         expected = {
+            "0095_schedule_device_scope": "0094_merge_proxy_peer_identity",
             "0094_merge_proxy_peer_identity": ("0093_proxy_usage_shadow", "0093_device_peer_identity"),
             "0093_device_peer_identity": "0092_task_text_storage",
             "0093_proxy_usage_shadow": "0092_task_text_storage",
@@ -321,6 +345,7 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
                             actual = [dict(row) for row in connection.execute("SELECT * FROM ai_schedule ORDER BY id")]
                             for row in actual:
                                 self.assertEqual(row.pop("model_source"), "managed")
+                                self.assertEqual(row.pop("device_bound_runner"), 0)
                                 self.assertEqual(json.loads(row.pop("source_requirement")),
                                                  expected_source if row["id"] == "schedule-enabled" else {})
                             self.assertEqual(actual, old_schedules)

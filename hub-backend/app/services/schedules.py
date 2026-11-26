@@ -700,7 +700,8 @@ async def run_one(session: AsyncSession, s, who: str = "SoduWork（定时）",
                 'targetRunnerId': runner.id, 'targetRunnerKind': runner_kind,
             }
             try:
-                result = await cloud_conversations.create(session, client, request_id, request, [])
+                result = await cloud_conversations.create(session, client, request_id, request, [],
+                                                          device_bound=bool(s.device_bound_runner))
             except HTTPException as exc:
                 if exc.status_code != 409 or exc.detail != (
                         '此云端会话请求编号已用于另一条消息或附件，请使用原请求重试'):
@@ -710,7 +711,7 @@ async def run_one(session: AsyncSession, s, who: str = "SoduWork（定时）",
                 legacy_instruction = instruction_prefix + _utc(run.started_at).astimezone(schedule_zone(s)).isoformat()
                 result = await cloud_conversations.create(session, client, request_id, {
                     **request, 'text': legacy_instruction, 'userText': legacy_instruction,
-                }, [])
+                }, [], device_bound=bool(s.device_bound_runner))
             await session.refresh(run)
             receipt = dict(run.receipt or {})
             receipt.update({

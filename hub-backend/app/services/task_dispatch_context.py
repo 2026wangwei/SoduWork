@@ -20,11 +20,15 @@ async def _remote_execution_context(session, client, ctx, body, aid, task,
     runner = selection.get("runner")
     runner = runner if isinstance(runner, dict) else {}
     modes = {str(item.get("mode") or "") for item in (location, runner)} - {""}
+    rid = str(runner.get("runnerId") or runner.get("id") or "").strip()
+    selected_client = str(runner.get("clientId") or "")
     if "remote" not in modes:
+        if ((selected_client and selected_client != client.id)
+                or (rid and rid not in (ctx.get("_runnerAllowedRunners") or []))):
+            raise HTTPException(409, "所选本机执行机与当前设备不一致，请刷新后重新选择")
         return ctx, aid
     if modes != {"remote"} or personal_plugin:
         raise HTTPException(409, "执行位置与所选工作方法不一致，请刷新后重新选择")
-    rid = str(runner.get("runnerId") or runner.get("id") or "").strip()
     cli = ai_exec_route.cli_of(aid)
     if not rid or not cli:
         raise HTTPException(409, "请选择明确的远程执行机和执行底座")
@@ -36,8 +40,7 @@ async def _remote_execution_context(session, client, ctx, body, aid, task,
         "model": str(body.get("model") or ""),
         "targetRunnerKind": str(runner.get("runnerKind") or ""),
         "requiredSkills": list((task.work_routing or {}).get("requiredSkills") or []),
-    })
-    selected_client = str(runner.get("clientId") or "")
+    }, device_bound=True)
     if selected_client and selected_client != str(picked.get("clientId") or ""):
         raise HTTPException(409, "目标执行机归属已变化，请刷新后重新选择")
     live = runner_hub.get(rid)

@@ -180,6 +180,7 @@ _WANT_COLUMNS = {
         ("source_requirement", "{json} NOT NULL DEFAULT '{{}}'"),
         ("model_name", "VARCHAR(300) NOT NULL DEFAULT ''"),
         ("model_source", "VARCHAR(16) NOT NULL DEFAULT 'managed'"),
+        ("device_bound_runner", "BOOLEAN NOT NULL DEFAULT FALSE"),
         ("created_by", "VARCHAR(36)"),
         ("time_zone", "VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'"),
         ("required_capabilities", "{json} NOT NULL DEFAULT '[]'"),

@@ -63,14 +63,14 @@ async def scope(session, client):
     return clients, orgs
 
 
-async def targets(session, client):
-    clients, orgs = await scope(session, client)
-    # Client cloud sessions may use only the current user's explicitly owned
-    # independent environment.  In particular, never fall back to a legacy
-    # NULL-owner/shared runner or a colleague's node.
-    allowed = await personal_runner_ids(session, client)
-    personal_clients = set((await session.scalars(select(Client.id).where(
-        Client.user_ref == client.user_ref, Client.auth_state == "active"))).all())
+async def targets(session, client, *, device_bound=False):
+    if device_bound:
+        clients, orgs, personal_clients = {client.id}, set(), {client.id}
+        allowed = await device_execution_runner_ids(session, client)
+    else:
+        clients, orgs = await scope(session, client)
+        allowed = await personal_runner_ids(session, client)
+        personal_clients = {*clients, client.id}
     result = await _targets(client, clients, orgs, allowed, personal_clients)
     names = dict((await session.execute(select(RunnerNode.id, RunnerNode.enroll_name).where(
         RunnerNode.id.in_({target["runnerId"] for target in result})
@@ -95,6 +95,24 @@ async def personal_runner_ids(session, client):
         or_(RunnerNode.owner_user_id == user.id,
             RunnerNode.client_id.in_(own_clients))))
     return set(result.all())
+
+
+def _device_runner_scope(client, user):
+    # A desktop Runner belongs to its authenticated client instance. An
+    # independently enrolled personal cloud environment has no desktop client.
+    return or_(
+        (RunnerNode.client_id != "") & (RunnerNode.client_id == client.id) &
+        or_(RunnerNode.owner_user_id.is_(None), RunnerNode.owner_user_id == user.id),
+        ((RunnerNode.client_id == "") | RunnerNode.client_id.is_(None)) &
+        (RunnerNode.owner_user_id == user.id),
+    )
+
+
+async def device_execution_runner_ids(session, client):
+    """Durable destinations a device can select, including an offline local Runner."""
+    user = await owner(session, client)
+    rows = await session.scalars(select(RunnerNode.id).where(_device_runner_scope(client, user)))
+    return set(rows)
 
 
 def _automatic_targets(result, agent_id="", source=None, required_skills=()):
@@ -277,10 +295,15 @@ async def target_catalog(session, client, agent_id=""):
     }}
 
 
-async def destination(session, client, options, source=None):
-    roster = await targets(session, client)
+async def destination(session, client, options, source=None, *, device_bound=False):
+    # Scheduled cloud runs retain their origin's restriction through the
+    # prepare/commit handoff, including a retry after the initial selection.
+    device_bound = device_bound or (source or {}).get("deviceBoundRunner") is True
+    roster = await targets(session, client, device_bound=device_bound)
     picked = next((x for x in roster if x["id"] == options["assigneeId"]), None)
     if not picked:
+        if device_bound:
+            raise HTTPException(409, "所选执行机不在当前设备的可用列表中，请刷新后重新选择")
         raise HTTPException(409, "目标必须是有权使用、支持会话交接的另一台在线执行机，请刷新列表")
     requested_runner_kind = str(options.get("targetRunnerKind") or "").strip()
     if requested_runner_kind and picked.get("runnerKind") != requested_runner_kind:
@@ -299,12 +322,15 @@ async def destination(session, client, options, source=None):
     # Re-check durable ownership at the final dispatch boundary.  This closes
     # the race where a node is deleted/reassigned after target discovery.
     user = await owner(session, client)
-    own_clients = select(Client.id).where(
-        Client.user_ref == user.id, Client.auth_state == "active")
-    owned = await session.scalar(select(RunnerNode.id).where(
-        RunnerNode.id == runner.id,
-        or_(RunnerNode.owner_user_id == user.id,
-            RunnerNode.client_id.in_(own_clients))))
+    if device_bound:
+        if runner.client_id and runner.client_id != client.id:
+            raise HTTPException(409, "所选执行机已变更归属，请刷新后重新选择")
+        scope_filter = _device_runner_scope(client, user)
+    else:
+        own_clients = select(Client.id).where(
+            Client.user_ref == user.id, Client.auth_state == "active")
+        scope_filter = or_(RunnerNode.owner_user_id == user.id, RunnerNode.client_id.in_(own_clients))
+    owned = await session.scalar(select(RunnerNode.id).where(RunnerNode.id == runner.id, scope_filter))
     if owned is None:
         raise HTTPException(409, "目标执行机不再属于当前账号，请刷新列表")
     needed = options.get("requiredSkills", [])
@@ -658,8 +684,10 @@ def scope_for_destination(ctx, client, picked):
         if isinstance(out.get(key), dict):
             out[key] = dict(out[key])
             out[key].pop("git", None)
+    # A personal destination has either an exact device or an enrolled owner.
+    # Moving the same Runner ID into a shared organization cannot retain this grant.
     out.update(_runnerAllowedClients=[picked["clientId"]] if picked["clientId"] else [],
-               _runnerAllowedOrgs=[picked["orgId"]] if picked["orgId"] else [],
+               _runnerAllowedOrgs=[],
                _runnerAllowedRunners=[picked["runnerId"]], _cloudExecution=True,
                _personalRunnerOwner=client.user_ref,
                _personalRunnerIds=[picked["runnerId"]])

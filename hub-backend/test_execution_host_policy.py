@@ -26,6 +26,19 @@ class HostPolicyTests(HandoffFixture, unittest.IsolatedAsyncioTestCase):
         gate.start()
         self.addCleanup(gate.stop)
 
+    async def test_a_pinned_cloud_selection_cannot_follow_a_replacement_device(self):
+        runner = self.live("cloud")
+        await self.enroll_personal(runner)
+        async with db.SessionLocal() as session:
+            client = await session.get(models.Client, self.client_id)
+            [picked] = await handoffs.targets(session, client, device_bound=True)
+            cfg = ai_exec._runner_cfg(handoffs.scope_for_destination({}, client, picked))
+        self.assertEqual([agent["runnerId"] for agent in ai_remote.list_assignees_sync(cfg)["agents"]], [runner.id])
+        runner.client_id = self.other_id
+        self.assertEqual(ai_remote.list_assignees_sync(cfg)["agents"], [])
+        runner.client_id, runner.owner_user_id = "", ""
+        self.assertEqual(ai_remote.list_assignees_sync(cfg)["agents"], [])
+
     async def test_defaults_and_exact_list_parsing(self):
         settings = Settings(_env_file=None, cloud_execution_runner_ids='', hub_local_execution_enabled=True)
         with patch.object(policy, 'get_settings', return_value=settings):

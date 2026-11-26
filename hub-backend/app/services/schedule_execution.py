@@ -45,6 +45,27 @@ def required_skill_names(raw) -> list[str]:
             if key in CAPABILITY_SKILLS]
 
 
+async def validate_device_runner(session, s, client=None):
+    """Authorize explicit selections against the enrollment even while the Runner is offline."""
+    if not getattr(s, "device_bound_runner", False):
+        return
+    aid = str(s.assignee_id or "")
+    if aid.startswith("local:") and aid[6:]:
+        return
+    if client is None:
+        client = await session.get(models.Client, s.owner_client_id)
+    from . import conversation_handoffs, runner_hub
+    from .runner_inventory_scope import scope_for
+    parts = aid.split(":", 2)
+    if not client or len(parts) != 3 or parts[0] != "runner" or not parts[2]:
+        raise ValueError("请选择当前设备可用的执行底座")
+    rid = parts[1]
+    live = runner_hub.get(rid)
+    if ((live is not None and not scope_for(client, live)) or
+            rid not in await conversation_handoffs.device_execution_runner_ids(session, client)):
+        raise ValueError("所选执行机不属于当前设备，请在原设备操作或重新选择")
+
+
 def device_model_target_error(s) -> str:
     """Reject a device-owned model when the selected Runner is not this desktop."""
     if schedule_model_source(s) != "device":
@@ -100,7 +121,9 @@ def capability_save_blocker(s) -> str:
     if not required:
         return ""
     from . import runner_hub
-    runner = runner_hub.for_client(str(getattr(s, "owner_client_id", "") or ""))
+    parts = str(getattr(s, "assignee_id", "") or "").split(":", 2)
+    runner = (runner_hub.get(parts[1]) if len(parts) == 3 and parts[0] == "runner" else
+              runner_hub.for_client(str(getattr(s, "owner_client_id", "") or "")))
     if runner is None:
         return ""
     verdict = runner_hub.capability_verdict(runner, required)
@@ -312,6 +335,11 @@ async def _preflight_execution(session: AsyncSession, s,
                 "message": "请先选择任务归属的 SoduWork",
                 "checks": [{"key": "runner", "state": "blocked",
                             "label": "尚未选择执行设备"}]}
+    try:
+        await validate_device_runner(session, s, client)
+    except ValueError as exc:
+        return {"state": "blocked", "mode": mode, "message": str(exc),
+                "checks": [{"key": "runner", "state": "blocked", "label": str(exc)}]}
     if getattr(s, "owner_user_id", None) and s.owner_user_id != client.user_ref:
         return {"state": "blocked", "mode": mode,
                 "message": "执行设备的登录账号已变更，请原账号登录后再执行"}
@@ -352,13 +380,16 @@ async def _preflight_execution(session: AsyncSession, s,
             picked = await conversation_handoffs.destination(session, client, {
                 "assigneeId": aid, "agentId": parts[2], "model": model_name,
                 "requiredSkills": required_skill_names(required),
-            })
+            }, device_bound=bool(getattr(s, "device_bound_runner", False)))
             verdict = runner_hub.capability_verdict(target, required)
             if not verdict.get("ok"):
                 remedy, message = _capability_remediation(target, verdict)
                 return {"state": "waiting", "mode": mode, "message": message,
                         "requiredCapabilities": required, "remedy": remedy}
         else:
+            if aid.startswith("local:"):
+                # Native occurrences are consumed by the original desktop inbox.
+                ctx = ai_exec.with_client_runner_scope(ctx, client.id)
             picked = await asyncio.to_thread(
                 ai_exec.resolve_requested_sync, ctx, aid,
                 str(getattr(s, "assignee_type", "") or "agent"),
@@ -422,6 +453,7 @@ async def _preflight_execution(session: AsyncSession, s,
 async def validate_execution(session: AsyncSession, s,
                              org_ids: set[str] | None = None, *, allow_missing_model: bool = False):
     """Validate the selected immutable automation binding at save and run time."""
+    await validate_device_runner(session, s)
     normalize_conversation_schedule(s)
     validate_timing(s)
     device_error = device_model_target_error(s)

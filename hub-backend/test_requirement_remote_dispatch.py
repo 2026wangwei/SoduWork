@@ -23,11 +23,11 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app import models, automation_models as am
-from app.api import attachments, tasks
+from app.api import attachments, task_options, tasks
 from app.db import get_session
-from app.deps import current_client
+from app.deps import authenticated_client, current_client
 from app.services import (ai_exec, ai_remote, conversation_handoffs, dispatch_identity,
-                          runner_hub, task_dispatch, task_execution_options)
+                          runner_hub, task_dispatch)
 from test_unified_requirements import _schema_template
 
 for model_file in (Path(__file__).parent / "app").glob("*models.py"):
@@ -79,7 +79,7 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
             self.calls.append((cfg, picked, extra))
             return {"ok": True, "issueId": dispatch_identity.execution_ref(extra["dispatchId"]),
                     "runnerId": picked["runnerId"], "runnerClientId": picked["clientId"],
-                    "files": len(files),
+                    "files": len(files or []),
                     "host": picked["host"], "assigneeId": picked["id"],
                     "assigneeCli": "pi", "state": "running"}
 
@@ -106,6 +106,7 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         app.include_router(tasks.router)
         app.include_router(attachments.router)
+        app.include_router(task_options.router)
 
         async def db():
             async with self.sessions() as session:
@@ -113,6 +114,7 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         app.dependency_overrides[get_session] = db
         app.dependency_overrides[current_client] = lambda: self.client
+        app.dependency_overrides[authenticated_client] = lambda: self.client
         self.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture")
         self.addAsyncCleanup(self.http.aclose)
 
@@ -124,6 +126,25 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def post(self, body=None):
         return await self.http.post("/api/v1/tasks/r3/ai-dispatch", json=self.body() if body is None else body)
+
+    async def catalog(self, **body):
+        response = await self.http.post("/api/v1/task-execution-options", json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    async def bind_desktop_runner(self, *, task_on_desktop=False):
+        async with self.sessions() as session:
+            row = await session.get(am.RunnerNode, self.runner.id)
+            row.owner_user_id = None
+            row.client_id = "desktop"
+            if task_on_desktop:
+                self.client = await session.get(models.Client, "desktop")
+                task = await session.get(models.Task, "r3")
+                task.owner_client_id = self.client.id
+            await session.commit()
+        self.runner.owner_user_id = ""
+        self.runner.client_id = "desktop"
+        self.runner.tags = [runner_hub.CLIENT_TAG]
 
     async def test_handoff_checks_confirmed_model_at_commit_and_at_dispatch(self):
         original = {"base": "http://fixture.invalid", "key": "fixture", "provider": "provider-a",
@@ -240,11 +261,9 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.calls), 1)
 
     async def test_catalog_cloud_selection_dispatches_exact_runner_once(self):
-        async with self.sessions() as session:
-            targets = await conversation_handoffs.targets(session, self.client)
-        catalog = task_execution_options.substrate_options(
-            [{**target, "cli": target["agentId"], "online": True, "remote": True} for target in targets],
-            ["files", "terminal"], self.client.id)
+        result = await self.catalog(taskId="r3")
+        self.assertEqual([target["runnerId"] for target in result["executionTargets"]], ["cloud"])
+        catalog = result["substrates"]
         self.assertEqual(len(catalog), 1)
         location = catalog[0]["locations"][0]
         self.assertEqual(location["runnerKind"], "cloud")
@@ -272,23 +291,24 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_offline_selected_target_never_falls_back_to_another_runner(self):
         async with self.sessions() as session:
-            session.add(am.RunnerNode(id="alternative", client_id="desktop", org_id="team"))
+            session.add(am.RunnerNode(id="alternative", client_id=self.client.id, org_id="team"))
             await session.commit()
         self.runner.id = "alternative"
         self.runner.owner_user_id = ""
-        self.runner.client_id = "desktop"
+        self.runner.client_id = self.client.id
         self.runner.tags = [runner_hub.CLIENT_TAG]
         with patch.dict(runner_hub._RUNNERS, {"alternative": self.runner}, clear=True):
-            async with self.sessions() as session:
-                targets = await conversation_handoffs.targets(session, self.client)
-                self.assertEqual([row["id"] for row in targets], ["runner:alternative:pi"])
+            catalog = await self.catalog(taskId="r3")
+            self.assertEqual([row["runnerId"] for row in catalog["substrates"][0]["locations"]],
+                             ["alternative"])
             response = await self.post()
         self.assertEqual(response.status_code, 409, response.text)
         self.assertFalse(self.calls)
 
     async def test_ownership_change_after_catalog_read_is_rejected(self):
+        catalog = await self.catalog(taskId="r3")
+        self.assertEqual([row["runnerId"] for row in catalog["executionTargets"]], ["cloud"])
         async with self.sessions() as session:
-            self.assertTrue(await conversation_handoffs.targets(session, self.client))
             row = await session.get(am.RunnerNode, "cloud")
             row.owner_user_id = "other"
             await session.commit()
@@ -296,18 +316,51 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertFalse(self.calls)
 
-    async def test_peer_desktop_owned_by_same_account_is_authorized(self):
+    async def test_peer_desktop_is_hidden_and_rejected_for_requirement_execution(self):
+        await self.bind_desktop_runner()
+        directory = await self.catalog(taskId="r3")
+        self.assertEqual(directory["availability"]["remoteTargetCount"], 0)
+        self.assertFalse(directory["executionTargets"])
+        self.assertFalse(directory["substrates"])
         async with self.sessions() as session:
-            row = await session.get(am.RunnerNode, "cloud")
-            row.owner_user_id = None
-            row.client_id = "desktop"
-            await session.commit()
-        self.runner.owner_user_id = ""
-        self.runner.client_id = "desktop"
-        self.runner.tags = [runner_hub.CLIENT_TAG]
-        response = await self.post(self.body(clientId="desktop"))
+            # Explicit conversation handoff retains its independent same-account scope.
+            handoff_targets = await conversation_handoffs.targets(session, self.client)
+            self.assertEqual([row["clientId"] for row in handoff_targets], ["desktop"])
+        for body in (self.body(clientId="desktop"), self.body(),
+                     {"assigneeId": "runner:cloud:pi"}):
+            with self.subTest(body=body):
+                response = await self.post(body)
+                self.assertEqual(response.status_code, 409, response.text)
+        response = await self.http.post("/api/v1/tasks/r3/ai-plan", json={"assigneeId": "runner:cloud:pi"})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertFalse(self.calls)
+        async with self.sessions() as session:
+            self.assertNotIn("executionContext", (await session.get(models.Task, "r3")).work_routing)
+
+    async def test_same_desktop_can_select_and_dispatch_its_embedded_runner(self):
+        await self.bind_desktop_runner(task_on_desktop=True)
+        directory = await self.catalog(taskId="r3")
+        self.assertFalse(directory["executionTargets"])
+        locations = directory["substrates"][0]["locations"]
+        self.assertEqual([(item["mode"], item["runnerId"]) for item in locations], [("local", "cloud")])
+        body = self.body(clientId="desktop")
+        selection = body["executionContext"]
+        selection["location"]["mode"] = "local"
+        selection["runner"]["mode"] = "local"
+        selection["runner"]["runnerId"] = "stale-local"
+        response = await self.post(body)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse(self.calls)
+        selection["runner"]["runnerId"] = locations[0]["runnerId"]
+        response = await self.post(body)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.calls[0][1]["clientId"], "desktop")
+
+    async def test_plan_default_selects_the_owner_device(self):
+        await self.bind_desktop_runner(task_on_desktop=True)
+        response = await self.http.post("/api/v1/tasks/r3/ai-plan", json={})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.calls[0][0]["allowedClients"], ["desktop"])
 
     async def test_conflicting_location_and_agent_are_rejected(self):
         bodies = [self.body(), self.body(), self.body(clientId="other-device")]

@@ -742,19 +742,21 @@ async def ai_plan_task(
     t = await _my_task(session, client, tid)
     if t.status == "done":
         raise HTTPException(status_code=400, detail="需求已完成，不用再出计划")
-    ctx = await ai_exec.load(session, force=True)
+    ctx = ai_exec.with_client_runner_scope(await ai_exec.load(session, force=True), client.id)
     aid = str(body.get("assigneeId") or "").strip()
     atype = str(body.get("assigneeType") or "").strip().lower()
     if atype not in ("agent", "squad"):
         atype = ""
-    if not aid and not ai_exec.enabled(ctx):
-        raise HTTPException(status_code=409, detail="AI 执行还没配好，请让管理员在后台配置")
-    picked = None
     if aid:
         picked = await _aio.to_thread(
             ai_exec.resolve_requested_sync, ctx, aid, atype, client.id)
         if picked is None:
             raise HTTPException(status_code=400, detail="选中的 AI 已经不在了，请重新选一个")
+    else:
+        picked = await _aio.to_thread(ai_exec.resolve_default_sync, ctx, client.id,
+                                      required_capabilities=ai_exec.required_capabilities(t))
+        if picked is None:
+            raise HTTPException(status_code=409, detail="当前设备没有可用于规划的在线 Agent")
     extra = await ai_exec.collect_task_context(session, tid)
     extra["brief"] = str(body.get("brief") or "")[:2000]
     extra["repo"] = _repo_ctx(body)

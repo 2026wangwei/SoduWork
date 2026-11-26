@@ -302,7 +302,7 @@ function _schAgentOptionsHtml(current) {
   if (selected && !rows.some(item => String(item.id) === selected)) {
     const saved = (window.SoduWorkI18n && window.SoduWorkI18n.translateText)
       ? window.SoduWorkI18n.translateText('已保存的执行底座') : '已保存的执行底座';
-    rows.unshift({ id: selected, name: saved, available: false });
+    rows.unshift({ id: selected, name: saved, available: false, disabled: true });
   }
   if (!rows.length) {
     const empty = (window.SoduWorkI18n && window.SoduWorkI18n.translateText)

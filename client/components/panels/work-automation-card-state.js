@@ -184,6 +184,8 @@
   }
   function savedHtml(value, agent, method, esc) {
     const requirementDraft = Boolean(value.sourceRequirement?.id);
+    const otherDevice = value.isOriginDevice === false;
+    const canEdit = !otherDevice && value.isOriginDevice !== null;
     const tx = text => global.SoduWorkI18n?.translateText?.(text) || text;
     const when = String(value.atHour).padStart(2, '0') + ':' + String(value.atMinute).padStart(2, '0');
     const selectedWeekdays = Array.isArray(value.weekdays) && value.weekdays.length ? value.weekdays : [value.weekday];
@@ -204,11 +206,11 @@
       (method ? '<span>' + esc(method.name) + ' · v' + esc(method.version || '') + '</span>' : '') +
       '</div><small>' + esc(value.timeZone || '') + '</small>' + (requirementDraft ? '<small data-user-content>' + esc(tx('来源需求')) + '：' + esc(value.sourceRequirement.title || '') +
         ' · v' + esc(value.sourceRequirement.requirementVersion) + '</small>' : '') +
-      '<small>' + esc(tx(requirementDraft ? '尚未启用，原需求保持不变。可在自动化管理中启用。' : value.enabled === false ? '已停止后续自动触发，可在自动化管理中重新启用。' :
+      '<small>' + esc(tx(otherDevice ? '在其他设备执行' : requirementDraft ? '尚未启用，原需求保持不变。可在自动化管理中启用。' : value.enabled === false ? '已停止后续自动触发，可在自动化管理中重新启用。' :
         '以后每次运行都会生成可追踪的任务，并保留结果、异常与重试记录。')) + '</small>' +
-      (value.id ? '<div class="waz-saved-actions"><button type="button" class="waz-button" data-waz-edit>' + esc(tx('修改自动化')) + '</button>' +
+      (value.id ? '<div class="waz-saved-actions">' + (canEdit ? '<button type="button" class="waz-button" data-waz-edit>' + esc(tx('修改自动化')) + '</button>' : '') +
         (value.enabled !== false ? '<button type="button" class="waz-button" data-waz-pause>' + esc(tx('停用自动化')) + '</button>' : '') + '</div>' : '') +
-      '<small>' + esc(tx('可继续发送“修改这个自动化”及具体要求')) + '</small>' +
+      (canEdit ? '<small>' + esc(tx('可继续发送“修改这个自动化”及具体要求')) + '</small>' : '') +
       '<button type="button" class="waz-button primary" data-waz-open>' + esc(tx('查看自动化')) + '</button></div>';
   }
   global.WorkAutomationCardState = { create, loadOptions, defaultModelFor, savedHtml };
