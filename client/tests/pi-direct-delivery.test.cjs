@@ -91,6 +91,28 @@ test('direct Pi completion captures immutable bytes before a queued turn overwri
   assert.equal(f.handle.inFlight(), false);
 });
 
+test('a new ordinary requirement reports completion after leaving a blocked goal', { timeout: 20000 }, async t => {
+  const f = await fixture(t, { resumePath: '', intent: 'goal', goal: '用一句话回答用户', acceptance: '输出“你好。”' });
+  f.reply(() => ({ text: '暂时没有满足原目标。' }));
+  await f.handle.submit('请完成目标。').completion;
+  assert.equal(f.handle.snapshot().execution.quality.phase, 'blocked');
+  assert.equal(f.handle.disableGoal().ok, true);
+
+  const name = '冬天.md', content = '# 冬天\n雪落在屋檐上。';
+  let requests = 0;
+  f.reply(() => ++requests === 1 ? { tool: 'write', args: { path: name, content } }
+    : { text: '已写好冬天.md，可直接使用。' });
+  const receipts = [];
+  const task = f.handle.submit('请写一篇关于冬天的短文并保存为 Markdown。', [], {
+    taskId: 'new-requirement', afterTurn: status => receipts.push(status),
+  });
+  const result = await task.completion;
+  assert.equal(result.snapshot.status, 'idle');
+  assert.equal(result.snapshot.execution.quality.required, false);
+  assert.equal(fs.readFileSync(path.join(f.cwd, name), 'utf8'), content);
+  assert.deepEqual(receipts, ['completed']);
+});
+
 test('explicit continueGoal captures only the accepted final answer after a blocked quality result', { timeout: 20000 }, async t => {
   const f = await fixture(t, { resumePath: '', intent: 'goal', goal: '用一句话回答用户', acceptance: '输出“你好。”' });
   const captured = [];

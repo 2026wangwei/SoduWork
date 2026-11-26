@@ -102,6 +102,25 @@ test('failure, stop and wait retain later messages until explicit resume', async
    assert.notEqual(resultState(result),'completed'); q.resume(); assert.equal(q.blocked(),false);
  }
 });
+test('an inactive goal audit does not override the current turn receipt', () => {
+  const blocked = { quality: { required: false, phase: 'blocked' }, harness: { state: 'blocked' } };
+  const paused = { quality: { required: false, phase: 'paused' }, paused: true };
+  const state = (execution, snapshot = {}, result = {}) =>
+    resultState({ ok: true, ...result, snapshot: { status: 'idle', execution, ...snapshot } });
+  assert.equal(state(blocked), 'completed');
+  assert.equal(state(paused), 'completed');
+  assert.equal(state(blocked, { status: 'incomplete' }), 'failed');
+  assert.equal(state(blocked, { status: 'aborted' }), 'stopped');
+  assert.equal(state(blocked, { pendingUi: { id: 'confirm' } }), 'waiting');
+  assert.equal(state(paused, {}, { paused: true }), 'waiting');
+  assert.equal(state({ ...paused, limitRequest: { kind: 'time' } }), 'waiting');
+  assert.equal(state({ quality: { required: false }, paused: true }), 'waiting');
+  for (const required of [true, undefined]) {
+    assert.equal(state({ quality: { required, phase: 'blocked' } }), 'failed');
+    assert.equal(state({ quality: { required }, harness: { state: 'incomplete' } }), 'failed');
+    assert.equal(state({ quality: { required, phase: 'paused' }, paused: true }), 'waiting');
+  }
+});
 test('task receipt failure blocks advancement instead of claiming success', async () => {
  const q=createTurnQueue(); const item=q.add({text:'t',options:{taskId:'t',afterTurn:()=>{throw Error('receipt offline');}}});
  await q.run(q.take(),async()=>({ok:true}));
