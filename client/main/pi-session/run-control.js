@@ -6,6 +6,7 @@ const toolProgress = require('./tool-progress');
 function createState() {
   return {
     startedAt: 0,
+    permissionWaitMs: 0,
     terminalAt: 0,
     lastActivityAt: Date.now(),
     retryWaitUntil: 0,
@@ -54,11 +55,17 @@ function stepLimit(ctx) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+// File discovery and the turn journal share the original wall-clock start.
+// Only execution time and its budget exclude time spent waiting for consent.
+function elapsedRunMs(state, at) {
+  return state.startedAt ? Math.max(0, at - state.startedAt - (state.permissionWaitMs || 0)) : 0;
+}
+
 function execution(state, ctx) {
   const waitingPermission = Boolean(state.permissionWaitSince || ctx.waitingPermission?.());
   const now = state.permissionWaitSince || Date.now();
   const elapsedAt = state.terminalAt || now;
-  const elapsedMs = state.startedAt ? Math.max(0, elapsedAt - state.startedAt) : 0;
+  const elapsedMs = elapsedRunMs(state, elapsedAt);
   const status = ctx.status();
   const streaming = !waitingPermission && (state.promptActive || status === 'streaming');
   const activeList = [...state.activeTools.values()].sort((a, b) => a.startedAt - b.startedAt);
@@ -265,7 +272,7 @@ function permissionWait(state, waiting) {
   if (waiting) { if (!state.permissionWaitSince) state.permissionWaitSince = now; return; }
   if (!state.permissionWaitSince) return;
   const duration = now - state.permissionWaitSince;
-  if (state.startedAt) state.startedAt += duration;
+  if (state.startedAt) state.permissionWaitMs += Math.max(0, (state.terminalAt || now) - state.permissionWaitSince);
   state.lastActivityAt = now;
   for (const tool of state.activeTools.values()) { tool.startedAt += duration; tool.lastProgressAt = now; }
   state.permissionWaitSince = 0;
@@ -275,7 +282,7 @@ function startMonitor(state, ctx) {
   state.monitorTimer = setInterval(() => {
     if (!state.promptActive || !state.startedAt || state.permissionWaitSince || ctx.waitingPermission?.()) return;
     const now = Date.now();
-    if (ctx.goalEnabled() && ctx.budgetMs && now - state.startedAt >= ctx.budgetMs) {
+    if (ctx.goalEnabled() && ctx.budgetMs && elapsedRunMs(state, now) >= ctx.budgetMs) {
       stopForLimit(state, 'time', '\u672c\u8f6e\u5df2\u8fd0\u884c ' + ctx.goalBudgetMinutes +
         ' \u5206\u949f\uff0c\u5f53\u524d\u8fdb\u5ea6\u548c\u6587\u4ef6\u90fd\u5df2\u4fdd\u7559\u3002', ctx);
       return;
@@ -421,7 +428,7 @@ function scheduleStall(state, context, ctx) {
     }
     if (ctx.inFlight()) { afterRecoveryCleanup(state, launch); return; }
     state.stopReason = '';
-    if (asGoal && ctx.budgetMs && Date.now() - state.startedAt >= ctx.budgetMs) {
+    if (asGoal && ctx.budgetMs && elapsedRunMs(state, Date.now()) >= ctx.budgetMs) {
       state.stallPending = false;
       finishTurn(state);
       stopForLimit(state, 'time', '本轮已达到配置的运行时间，已有进度和文件已保留。', ctx);
@@ -511,7 +518,7 @@ function scheduleProtocol(state, context, ctx) {
     state.protocolPending = null;
     if (ctx.limitRequest() && ctx.limitRequest().kind === 'protocol') ctx.setLimitRequest(null);
     state.stopReason = '';
-    if (asGoal && ctx.budgetMs && Date.now() - state.startedAt >= ctx.budgetMs) {
+    if (asGoal && ctx.budgetMs && elapsedRunMs(state, Date.now()) >= ctx.budgetMs) {
       finishTurn(state);
       stopForLimit(state, 'time', '本轮已达到配置的运行时间，已有进度和文件已保留。', ctx);
       receipt.finish({ ok: true, paused: true, snapshot: ctx.acc.snapshot() });
@@ -559,7 +566,10 @@ function finishTurn(state) {
 }
 
 function resetTurn(state, resetRecovery, preserveBudget = false) {
-  if (!preserveBudget || !state.startedAt) state.startedAt = Date.now();
+  if (!preserveBudget || !state.startedAt) {
+    state.startedAt = Date.now();
+    state.permissionWaitMs = 0;
+  }
   state.terminalAt = 0;
   state.lastActivityAt = Date.now();
   state.retryWaitUntil = 0;

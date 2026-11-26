@@ -77,5 +77,11 @@ test('waiting for permission freezes execution clocks without stalled or long-ru
   assert.equal(view.longRunning, false);
   runControl.permissionWait(run, false);
   assert.equal(run.permissionWaitSince, 0);
-  assert.ok(Date.now() - run.startedAt < 21000);
+  assert.equal(run.startedAt, now - 600000, 'permission waits preserve the file and journal boundary');
+  assert.ok(runControl.execution(run, context).elapsedMs < 21000);
+  assert.ok(run.permissionWaitMs >= 580000);
+  runControl.resetTurn(run, false, true);
+  assert.ok(run.permissionWaitMs >= 580000, 'native recovery retains the logical turn budget');
+  runControl.resetTurn(run, false);
+  assert.equal(run.permissionWaitMs, 0);
 });

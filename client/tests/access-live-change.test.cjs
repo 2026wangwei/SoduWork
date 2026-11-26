@@ -144,6 +144,20 @@ test('user stop during permission replacement cancels automatic continuation',as
  await change;await running;assert.equal(continued,0);
 });
 
+test('a runtime replacement cannot resume a plugin repair under a different policy', async () => {
+  let abortPrompt, revision = 1, continuations = 0;
+  const session = { abort: () => abortPrompt(), sendCustomMessage: () => { continuations++; } };
+  const control = require('../main/access-control/pi-live-change').create({
+    current: () => ({ session, access: { suspend: async () => {} } }),
+    transition: { schedule() {}, apply: async () => { revision++; } },
+  });
+  const repair = control.run(() => new Promise(resolve => { abortPrompt = resolve; }), () => revision === 1);
+  assert.equal((await control.change({ mode: 'readonly' }, 1)).ok, true);
+  await repair;
+  assert.equal(revision, 2);
+  assert.equal(continuations, 0);
+});
+
 test('failed replacement keeps old permissions and resumes with a fresh approval instead of granting access', {timeout:40000},async t=>{
  let operation;
  const h=await harness(t,'standard',{reply:(body,op)=>op||(/The user changed/.test(JSON.stringify(body.messages.at(-1)))?operation:null)});

@@ -277,6 +277,47 @@ test('a completed manual turn shows waiting for submission rather than processin
   assert.match(f.content().innerHTML, /待提交验收/);
 });
 
+test('a stopped or failed native turn shows the terminal receipt and links the executor to the local chat', async () => {
+  for (const [state, issue, label] of [
+    ['cancelled', undefined, '已停止'],
+    ['cancelled', {code:'capture_pending', reason:'Obsolete sync hint'}, '已停止'],
+    ['failed', undefined, '执行失败'],
+    ['failed', {code:'capture_failed', reason:'Inspect the file'}, '交付受阻'],
+  ]) {
+    const value = {...task('interrupted'), status:'doing', ownerClientId:'local', canContinueExecution:true,
+      workRouting:{conversationTurn:{executor:'native',state,deliveryIssue:issue}}};
+    const f = fixture({getTask:async()=>value,clientId:'local'});
+    const opened = [];
+    f.context.openTaskConversation = (...args) => opened.push(args);
+    await f.api.open(value.id);
+    const html = f.content().innerHTML;
+    assert.match(html, new RegExp('rq-delivery-state is-stalled">' + label));
+    assert.match(html, /rq-delivery-actions"><button type="button" data-rq-chat>/);
+    assert.doesNotMatch(html, /data-rq-approval-card|Obsolete sync hint/);
+    assert.doesNotMatch(f.active().querySelector('.rq-detail-footer').innerHTML, /data-rq-chat/);
+    f.click('[data-rq-chat]'); await new Promise(setImmediate);
+    assert.equal(opened[0][0], value.id);
+    assert.equal(opened[0][2].source, 'requirement');
+    assert.equal(opened[0][2].navigation, true);
+  }
+});
+
+test('an interrupted turn cannot replace a later review or expose another device’s recovery link', async () => {
+  const value = {...task('shared'), status:'doing', ownerClientId:'owner', canContinueExecution:true,
+    workRouting:{conversationTurn:{executor:'native',state:'cancelled'}}};
+  const f = fixture({getTask:async()=>value,clientId:'other'});
+  await f.api.open(value.id);
+  assert.match(f.content().innerHTML, /rq-delivery-state is-stalled">已停止/);
+  assert.doesNotMatch(f.content().innerHTML, /data-rq-chat|data-rq-approval-card/);
+  value.requirementStage = 'reviewing'; await f.api.refresh(value.id);
+  assert.match(f.content().innerHTML, /rq-delivery-state is-ready">待验收/);
+  assert.doesNotMatch(f.content().innerHTML, /rq-delivery-state is-stalled/);
+  delete value.requirementStage;
+  value.workRouting.conversationTurn = {executor:'native',state:'running'};
+  await f.api.refresh(value.id);
+  assert.match(f.content().innerHTML, /rq-delivery-state is-active">处理中/);
+});
+
 test('completed delivery shows submission, synchronization or blocked state to every execution viewer', async () => {
   for (const [mode, issue, expected] of [
     ['manual', undefined, '待提交验收'],

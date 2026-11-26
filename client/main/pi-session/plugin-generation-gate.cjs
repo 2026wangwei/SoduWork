@@ -121,7 +121,7 @@ function finalDeliveryRevision(snapshot) {
   return JSON.stringify([delivery.source, delivery.summary, files.map(file =>
     [file.relative, file.size, file.at, file.primary, file.kind]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))]);
 }
-async function begin({handle, app, identity, logicalOwner, outputSnapshot, selectedPluginIds = [], cancelled = () => false, pauseConfirmed = () => false, repair, changed = () => {}, preflight} = {}) {
+async function begin({handle, app, identity, logicalOwner, outputSnapshot, selectedPluginIds = [], cancelled = () => false, repairAllowed = () => true, pauseConfirmed = () => false, repair, changed = () => {}, preflight} = {}) {
   if (!handle?.cwd) return { canStart: () => !cancelled(), finish: async result => result, dispose() {} };
   const cwd=outputRoot(handle), sessionId=handle.sessionId, owner=handle.deliveryOwner;
   const scope = () => JSON.stringify([handle.deliveryOwner, identity?.hub, identity?.clientId,
@@ -192,6 +192,8 @@ async function begin({handle, app, identity, logicalOwner, outputSnapshot, selec
       let targets=await collectTargets();
       if(!current())return stopped();
       if(!targets.length)return result;
+      const repairInterrupted = () => ({ ...result, ok:false, retrySafe:false, failureKind:'plugin-repair',
+        reason:'会话权限已变更，插件自动修复已中断。请在当前权限下重新检查插件。' });
       for(let attempt=logical.repairs;attempt<=2;attempt++) {
         let failed=[];
         const checked=new Map();
@@ -243,6 +245,7 @@ async function begin({handle, app, identity, logicalOwner, outputSnapshot, selec
         if(!failed.length)return {...result,pluginValidation:{state:'ready'}};
         if(attempt===2 || typeof repair!=='function')return {...result,ok:false,retrySafe:false,failureKind:'plugin-validation',
           reason:failed[0].diagnostic.file + ': ' + failed[0].diagnostic.message,pluginValidation:{state:'invalid',attempts:attempt}};
+        if(!repairAllowed())return repairInterrupted();
         logical.repairs=attempt+1;
         for(const row of failed)put(row.file,'repairing',logical.repairs,row.diagnostic);
         let repaired;
@@ -260,6 +263,7 @@ async function begin({handle, app, identity, logicalOwner, outputSnapshot, selec
           if(owned() && repaired?.ok===true && repaired.paused && !repaired.cancelled && pauseConfirmed())return {...result,...repaired};
           return stopped();
         }
+        if(!repairAllowed())return repairInterrupted();
         if(!completed(repaired)) {
           for(const row of failed)put(row.file,'invalid',attempt+1,row.diagnostic);
           if(repaired?.cancelled)return {...result,...repaired};
@@ -273,6 +277,7 @@ async function begin({handle, app, identity, logicalOwner, outputSnapshot, selec
         }
         // A sibling cannot satisfy a missing draft's validation obligation.
         const latest=await collectTargets();
+        if(!current())return stopped();
         const [missing] = missingDrafts(targets, latest);
         if (missing) {
           const issue = diagnostic(missing, { message:'Generated plugin draft is missing' });

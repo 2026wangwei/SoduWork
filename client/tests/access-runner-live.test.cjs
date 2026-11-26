@@ -7,10 +7,11 @@ const { createRunnerRuntimeAdapter, getRunnerSessionDetails } = require('../main
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) { for (let n = 0; n < 400; n++) { if (check()) return; await delay(10); } throw Error('Timed out'); }
 
-async function fixture(t, adapterId='qwen', { pendingRestore=false, mismatch=false, fail=false }={}) {
+async function fixture(t, adapterId='qwen', { pendingRestore=false, mismatch=false, fail=false,
+  mode='readonly', effective='current-turn' }={}) {
   const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'soduwork-runner-live-'));
-  const capability={schema:rules.SCHEMA,supported:true,modes:[...rules.MODES],canChangeDuringSession:true,changeTakesEffect:'current-turn'};
-  let policy=rules.create('readonly',cwd), pending=pendingRestore ? rules.next('standard',cwd,policy,1) : null;
+  const capability={schema:rules.SCHEMA,supported:true,modes:[...rules.MODES],canChangeDuringSession:true,changeTakesEffect:effective};
+  let policy=rules.create(mode,cwd), pending=pendingRestore ? rules.next('standard',cwd,policy,1) : null;
   let status='done', permissions=[], release=null, pollRelease=null, pollEntered=null;
   const calls=[];
   const adapter=createRunnerRuntimeAdapter({runtimeSpec:catalog.runtime(adapterId),
@@ -25,13 +26,15 @@ async function fixture(t, adapterId='qwen', { pendingRestore=false, mismatch=fal
       }
       if(op==='job.comment'){policy=payload.cfg.accessPolicy;status='running';return{ok:true,data:{ok:true}};}
       if(op==='job.access'){
-        assert.equal(payload.applyDuringTurn,true);
+        assert.equal(payload.applyDuringTurn,effective==='current-turn');
         if(release)await release;
         if(fail)return{ok:false,data:{ok:false,error:'No safe native resume'}};
-        if(!mismatch){policy=payload.accessPolicy;pending=null;permissions=[];}
-        return{ok:true,data:{ok:true,effective:'current-turn',accessPolicy:policy,nextAccessPolicy:pending,
+        if(effective==='next-turn')pending=payload.accessPolicy;
+        else if(!mismatch){policy=payload.accessPolicy;pending=null;permissions=[];}
+        return{ok:true,data:{ok:true,effective,accessPolicy:policy,nextAccessPolicy:pending,
           appliedAccessPolicy:{...policy,state:'applied'},pendingPermissions:permissions}};
       }
+      if(op==='job.permission'){permissions=[];return{ok:true,data:{ok:true}};}
       if(op==='job.stop'){status='stopped';return{ok:true,data:{ok:true}};}
       throw Error(op);
     }}});
@@ -40,9 +43,55 @@ async function fixture(t, adapterId='qwen', { pendingRestore=false, mismatch=fal
   t.after(async()=>{await session.dispose();fs.rmSync(cwd,{recursive:true,force:true});});
   await until(()=>handle.snapshot().accessControl.canChangeDuringSession);
   return{cwd,session,handle,calls,setStatus:value=>{status=value;},setPending:value=>{pending=value;},
+    setPermission:()=>{permissions=[{requestId:'command',policyRevision:1,action:'command.execute'}];},
     holdPoll:()=>{let resolve;const entered=new Promise(r=>{pollEntered=r;});pollRelease=new Promise(r=>{resolve=r;});return{entered,release:()=>{pollRelease=null;resolve();}};},
     hold:()=>{let resolve;release=new Promise(r=>{resolve=r;});return resolve;}};
 }
+
+for (const effective of ['current-turn', 'next-turn']) {
+  test('Runner preserves the requirement completion when full access applies ' + effective, async t => {
+    const f = await fixture(t, 'opencode', {mode:'standard', effective});
+    const receipts = [];
+    const turn = f.handle.submit('Write a report', [], {taskId:'issue', afterTurn:status=>receipts.push(status)});
+    await until(()=>f.calls.some(row=>row.op==='job.comment'));
+    f.setPermission();
+    await until(()=>f.handle.snapshot().pendingPermissions?.length);
+    const before = f.handle.snapshot().accessPolicy;
+    const change = await f.handle.setAccessPolicy(rules.next('full',f.cwd,before,before.revision),before.revision);
+    assert.deepEqual(change,{ok:true,effective});
+    if (effective === 'next-turn') {
+      assert.equal(f.handle.snapshot().accessPolicy.mode,'standard');
+      const pending = f.handle.snapshot().pendingPermissions[0];
+      assert.equal((await f.handle.answerUi({...pending,decision:'once'})).ok,true);
+    }
+    fs.writeFileSync(path.join(f.cwd,'report.md'),'# Completed report');
+    f.setStatus('done');
+    const result = await turn.completion;
+    assert.deepEqual(receipts,['completed']);
+    assert.equal(result.snapshot.status,'idle');
+    assert.ok(result.ok && !result.cancelled);
+    assert.equal(f.calls.filter(row=>row.op==='job.comment').length,1);
+    assert.equal(f.calls.some(row=>row.op==='job.stop'),false);
+  });
+}
+
+test('Runner refuses an implicit plugin repair after an access change and releases the active turn', async t => {
+  const f = await fixture(t, 'opencode', {mode:'standard'});
+  const receipts = [];
+  const turn = f.handle.submit('Generate a plugin', [], {taskId:'issue', afterTurn:status=>receipts.push(status)});
+  await until(()=>f.calls.some(row=>row.op==='job.comment'));
+  const policy = f.handle.snapshot().accessPolicy;
+  await f.handle.setAccessPolicy(rules.next('full',f.cwd,policy,policy.revision),policy.revision);
+  fs.writeFileSync(path.join(f.cwd,'soduwork-plugin-draft.json'),'{invalid JSON');
+  f.setStatus('done');
+  const result = await turn.completion;
+  assert.equal(result.ok,false);
+  assert.equal(result.failureKind,'plugin-repair');
+  assert.equal(result.snapshot.status,'unreachable');
+  assert.equal(f.handle.inFlight(),false);
+  assert.deepEqual(receipts,['failed']);
+  assert.equal(f.calls.filter(row=>row.op==='job.comment').length,1);
+});
 
 for(const id of ['qwen','codex-harness','opencode'])test(id+' applies confirmed current-turn policy without replaying user prompt',async t=>{
   const f=await fixture(t,id);

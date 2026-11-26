@@ -658,7 +658,7 @@ async function open(opts) {
       (value, config) => require('./background-process').run(() =>
         liveAccess.run(() => options?.pluginRepair
           ? piSession.sendCustomMessage({ customType: 'soduwork.plugin.repair', display: false, content: value }, { triggerTurn: true })
-          : _rawPromptComplete(value, config)),
+          : _rawPromptComplete(value, config), options?.canResume),
         { desktopScope: desktopControlScope }), prompt, options)
       .finally(() => _openTiming('prompt-end', openStarted));
   };
