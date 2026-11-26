@@ -61,14 +61,15 @@ function completesLegacyFilename(row, wanted) {
   if (!validCompleteFilename(row.filename)) return true;
   const oldSuffix = splitFilename(row.filename).extension.toLowerCase();
   if (newSuffix === oldSuffix || !newSuffix.startsWith(oldSuffix)) return false;
+  const legacySuffix = hasLegacySuffix(row);
   const mime = String(row.contentType || '').split(';')[0].trim().toLowerCase();
   if (mime && mime !== 'application/octet-stream') {
     const newMime = mimeTypeForFilename(wanted);
     if (mimeTypeForFilename(row.filename) === mime || (newMime && newMime !== mime)) return false;
-    // The truncated suffix may itself be valid, e.g. a .docx cut off after .doc.
-    if (row.filename.length === 160 && newMime === mime) return true;
+    // A .docx truncated to .doc can also survive an old rename as report.docx.doc.
+    if (newMime === mime && (row.filename.length === 160 || legacySuffix)) return true;
   }
-  return hasLegacySuffix(row) && (!oldSuffix || (!knownExtension(row.filename) && knownExtension(wanted)));
+  return legacySuffix && (!oldSuffix || (!knownExtension(row.filename) && knownExtension(wanted)));
 }
 
 function setCompleteFilename(row, filename) {

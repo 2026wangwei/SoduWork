@@ -84,6 +84,8 @@ test('rename preserves healthy extensions and repairs only a legacy suffix expli
     { filename: 'e'.repeat(156) + '.foo', contentType: 'application/octet-stream', title: 'different.foobar', expected: 'different.foobar.foo' },
     { filename: 'f'.repeat(158) + '.p', contentType: 'image/png', title: 'different.pdf', expected: 'different.pdf.p' },
     { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: 'application/msword', title: 'next.docx', expected: 'next.docx.doc' },
+    { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: correctMime, title: 'fixed.docx', expected: 'fixed.docx' },
+    { filename: 'ordinary.docx.doc', contentType: correctMime, title: 'unchanged-type.docx', expected: 'unchanged-type.docx.doc' },
     { filename: 'recovered.pdf.p', storedTitle: 'recovered.pdf', title: 'old-report.pdf', expected: 'old-report.pdf' },
   ];
   for (const { filename, contentType, storedTitle, title, expected } of inputs) {
