@@ -246,11 +246,11 @@ VERIFY_NEVER = ("**不要启动 GUI 浏览器截图**（chrome/edge/puppeteer/pl
                 "③ 需要真跑就**后台起服务 + curl 探活**，拿到期望内容就**立刻停掉**。")
 
 # Provider-specific screenshot and evidence delivery instructions.
-ARTIFACT_HOSTED = "把改动后的界面截图存到工程目录下，作为**评论附件**交回。"
+ARTIFACT_HOSTED = "把展示效果的截图作为验证证据，以评论附件交回。用户明确要求交付图片文件时，将该文件列入交付清单。"
 ARTIFACT_LOCAL = (
-    "把改动后的界面截图存到工程目录下，SoduWork 会自己从这个目录把新文件收走。\n"
-    "★截图/日志这类是**产出物、不是代码**：`git add` 的时候**只加你真正改的源码**，"
-    "别把它们（和工作区里本来就有的其它未跟踪文件）一起提交进去。"
+    "把用于展示或验证效果的截图放在本次成果目录的 `.soduwork/evidence/` 下，在回复中链接它们供用户预览。"
+    "只有用户明确要求交付图片文件时，才将所需图片保存到交付位置并列入清单。\n"
+    "`git add` 时只暂存本次改动的源码和所需资源。"
 )
 
 COMMIT_DEFAULT = "提交信息用任务描述的语言、写清做了什么+怎么验的。\n"

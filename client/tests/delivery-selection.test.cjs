@@ -143,6 +143,53 @@ test('website verification captures cannot enter a bundle through primary or sup
     'a conflicting runtime dependency must not produce a broken website silently');
 });
 
+test('a request to see the result keeps preview links out of cards, requirements and bundles', async t => {
+  const f = fixture(t);
+  f.write('index.html', '<title>Garden</title><img src="garden.png">');
+  f.write('garden.png', 'page asset'); f.write('desktop.png', 'preview');
+  for (const [request, answer] of [
+    ['生成一个网页并展示效果截图', '[效果截图](desktop.png)'],
+    ['Create a website and show me a screenshot', '![Page screenshot](desktop.png)'],
+  ]) {
+    f.messages(request, answer);
+    const snap = runtime.snapshot(f.handle);
+    assert.deepEqual(names(snap), ['index.html']);
+    assert.equal(snap.items.find(item => item.relative === 'desktop.png').processEvidence, true);
+  }
+  f.manifest({deliverables:[{path:'index.html',files:['desktop.png','garden.png']}, {path:'desktop.png'}]});
+  assert.deepEqual(names(runtime.snapshot(f.handle)), ['index.html']);
+  const captured = await taskDelivery.capture(f.handle, 'completed');
+  assert.deepEqual(captured.files.map(file => file.name), ['garden.png', 'index.html']);
+});
+
+test('capture destinations are resolved from the executing project, including private delivery workspaces', t => {
+  const f = fixture(t), workspaces = require('../main/conversation/delivery-workspace.cjs');
+  const workspace = workspaces.allocate(f.cwd), root = workspaces.ensure(f.cwd, workspace);
+  const relative = path.relative(workspace.projectRoot, root).split(path.sep).join('/');
+  f.write(relative + '/index.html', '<title>Site</title>');
+  f.write(relative + '/final-page.png', 'captured page');
+  f.write(relative + '/.soduwork/delivery.json', JSON.stringify({schemaVersion:1,deliverables:[
+    {path:'index.html'}, {path:'final-page.png'},
+  ]}));
+  f.messages('Build a website', '[site](index.html)');
+  f.state.tools = [{name:'browser_screenshot',state:'done',args:{filename:relative + '/final-page.png'}}];
+  const handle = {...f.handle, deliveryWorkspace:workspace,
+    outputSnapshot:()=>require('../main/pi-session/outputs').scan(root, 0, 1)};
+  const snap = runtime.snapshot(handle);
+  assert.deepEqual(names(snap), ['index.html']);
+  assert.equal(snap.items.find(item => item.relative === 'final-page.png').processEvidence, true);
+});
+
+test('an old capture tool cannot turn a replacement image into evidence', t => {
+  const f = fixture(t);
+  f.write('cover.png', 'new cover artwork');
+  f.manifest({deliverables:[{path:'cover.png', primary:true}]});
+  f.messages('给我看看网页的效果截图', '[截图](cover.png)');
+  f.state.tools = [{name:'browser_screenshot', state:'done', after:1, args:{filename:'cover.png'}}];
+  f.state.messages.push({role:'user', content:'请制作一张封面插画'}, {role:'assistant', content:'[封面](cover.png)'});
+  assert.deepEqual(names(runtime.snapshot(f.handle)), ['cover.png']);
+});
+
 test('requested screenshots, explicit replacements, and summary-only work retain their contracts', async t => {
   const f = fixture(t);
   f.write('final-hero.png','requested image');

@@ -91,7 +91,7 @@ test('an indexed screenshot cannot authorize deleted, unknown, private or anothe
   assert.equal(fs.existsSync(target), false);
 });
 
-test('a summary-only delivery retains evidence access while an explicit image declaration keeps its original role', t => {
+test('reserved preview screenshots remain addressable even when a manifest calls them primary', t => {
   const f = fixture(t), relative = '.soduwork/evidence/website.png'; f.put(relative);
   const manifest = data => fs.writeFileSync(path.join(f.cwd, '.soduwork/delivery.json'), JSON.stringify(data));
   manifest({ schemaVersion: 1, presentation: 'summary', deliverables: [] });
@@ -99,9 +99,10 @@ test('a summary-only delivery retains evidence access while an explicit image de
   assert.equal(summary.delivery.items.length, 0); assert.equal(summary.items.length, 1);
   assert.equal(summary.items[0].primary, false); assert.equal(summary.items[0].processEvidence, true);
   manifest({ schemaVersion: 1, deliverables: [{ path: relative, kind: 'image', primary: true }] });
+  assert.deepEqual(outputs.scan(f.cwd, 0, 0).delivery.items, []);
   const explicit = runtime.snapshot(f.session());
-  assert.equal(explicit.items.length, 1); assert.equal(explicit.items[0].primary, true);
-  assert.notEqual(explicit.items[0].processEvidence, true); assert.equal(explicit.delivery.items.length, 1);
+  assert.equal(explicit.items.length, 1); assert.equal(explicit.items[0].primary, false);
+  assert.equal(explicit.items[0].processEvidence, true); assert.equal(explicit.delivery.items.length, 0);
 });
 
 test('evidence discovery bounds header reads even when the dedicated directory is oversized', t => {

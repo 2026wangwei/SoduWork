@@ -23,6 +23,20 @@ test('ambiguous basenames never open a different task or directory',()=>{
   assert.equal(links.fileTarget('report.html',rows),null);
   assert.equal(links.fileTarget('two/report.html',rows)?.artifactId,'b');
 });
+test('requirement card click scope follows the attachment through materialization and rejects a misplaced row', () => {
+  const remote = {artifactId: 'task-output:t:a', taskId: 't', attachmentId: 'a', relative: 'index.html'};
+  const local = {artifactId: 'art-1', cloudTaskId: 't', remoteAttachmentId: 'b', relative: 'result.html'};
+  const other = {artifactId: 'art-2', cloudTaskId: 'other', remoteAttachmentId: 'c', relative: 'index.html'};
+  const free = {artifactId: 'art-3', relative: 'index.html'};
+  function source(taskId, rowTask) {
+    const owner = {dataset: {outputTask: taskId}}, row = {dataset: {outputTaskId: rowTask}};
+    return {closest: selector => selector === '[data-output-task]' ? owner : selector === '.noutput-library-row' ? row : null};
+  }
+  assert.deepEqual(links.scoped(source('t', 't'), [remote, local, other, free]), [remote, local]);
+  assert.deepEqual(links.scoped(source('', 't'), [local, other]), [local]);
+  assert.deepEqual(links.scoped(source('t', 'other'), [local, other]), []);
+  assert.deepEqual(links.scoped(source('t'), [other, free]), [free]);
+});
 test('an explicit screenshot evidence path never falls back to an unrelated same-name asset',()=>{
   const shot={artifactId:'shot',name:'homepage.png',relative:'.soduwork/evidence/homepage.png'};
   const asset={artifactId:'asset',name:'homepage.png',relative:'assets/homepage.png'};
@@ -84,6 +98,23 @@ test('remote validation screenshots stay evidence while declared output images r
   assert.equal(image.primary,true);
   assert.equal(check.processEvidence,true);
   assert.equal(check.primary,false);
+});
+test('synchronized attachments preserve a locally verified preview screenshot in both matching paths', async () => {
+  const source = {artifactId: 'shot', relative: 'capture.png', name: 'capture.png',
+    primary: false, processEvidence: true, size: 30};
+  const hub = {listAttachments: async () => [{id: 'a', filename: source.name, role: 'output',
+    size: source.size, evidenceMeta: {category: 'primary'}}]};
+  for (const cloud of [false, true]) {
+    const artifacts = [{...source}];
+    const outputs = {ok: true, artifacts};
+    if (cloud) outputs.cloudOutputs = [{taskId: 't', attachmentId: 'a', artifactId: 'shot',
+      relative: source.relative, size: source.size}];
+    const rows = await links.load({outputs: async () => outputs}, 'ref', ['t'], [], hub);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].processEvidence, true);
+    assert.equal(rows[0].primary, false);
+    assert.equal(links.fileTarget('capture.png', rows).artifactId, 'shot');
+  }
 });
 test('legacy non-array output payloads are ignored without crashing the renderer',async()=>{
   const result=await links.load({outputs:async()=>({ok:true,artifacts:{length:1,files:[]},deliverables:{length:1}})},'r',[],[],null);

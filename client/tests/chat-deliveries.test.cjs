@@ -148,3 +148,31 @@ test('the single-file card title opens its archived revision despite a same-size
   assert.match(card.innerHTML, /data-open-app="version:frozen"/);
   assert.doesNotMatch(card.dataset.delivery, /"live"/);
 });
+
+test('an old receipt for the website plus its preview cannot restore a ZIP on the single-file card', () => {
+  const child = () => ({ dataset: {}, classList: { toggle() {} }, setAttribute() {},
+    appendChild() {}, replaceWith() {}, replaceChildren() {}, querySelector: child });
+  const details = child(), retry = child(), archive = child(), card = { ...child(),
+    querySelector: selector => ({'.ndelivery-files': details, '[data-delivery-retry]': retry,
+      '.ndelivery-actions [data-delivery-archive]': archive}[selector] || child()) };
+  const document = { createTextNode: textContent => ({textContent}),
+    createElement: tag => tag === 'section' ? card : child(), querySelectorAll: () => [card] };
+  let mounted = false;
+  const message = { dataset: {}, querySelector: () => null, querySelectorAll: () => [], appendChild() { mounted = true; } };
+  const root = {ownerDocument: document, querySelectorAll: selector =>
+    selector === '[data-delivery]' ? mounted ? [card] : [] : [message]};
+  const website = {artifactId: 'site', name: 'index.html', size: 30, at: 1, changedInTurn: true, primary: true};
+  const preview = {artifactId: 'shot', name: 'frame.png', size: 14, at: 1, primary: false, processEvidence: true};
+  const oldFiles = [website, preview];
+  const snapshot = {status: 'idle', deliverySync: {revision: 'old', currentTurn: true,
+    artifactVersions: oldFiles.map(file => ({id: file.artifactId, size: file.size, at: file.at})),
+    delivery: {id: 'old-zip', files: oldFiles.map(file => ({path: file.name}))}}};
+  const deliveries = helper(document);
+  deliveries.decorate(root, oldFiles, 'chat', snapshot);
+  assert.equal(mounted, true);
+  deliveries.hydrate(root, {api: {}, ref: 'chat', snapshot});
+  assert.match(card.innerHTML, /data-open-app="site"/);
+  assert.equal(details.hidden, true);
+  assert.equal(archive.hidden, true);
+  assert.equal(retry.title, '保存到资料库');
+});

@@ -62,7 +62,7 @@ if(typeof electron==='string'){
   assert.equal(await js(`document.querySelector('[data-delivery-retry]').disabled`),true);
   assert.equal(await js(`document.querySelector('[data-delivery-retry]').innerText`),'正在保存到资料库…');await shot('excel-saving');
   await js('waitSave=false;releaseSave();');await js('pending');
-  assert.equal(await js(`document.querySelector('[data-delivery-retry]').innerText`),'已保存到资料库');assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`),true);await shot('excel-saved');
+  assert.equal(await js(`document.querySelector('[data-delivery-retry]').innerText`),'已保存到资料库');assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`),0);await shot('excel-saved');
   const before=await js('uploads');await click('[data-delivery-retry]');
   assert.equal(await js('uploads'),before);assert.equal(await js(`document.activeElement.querySelector('.library-card-copy b').textContent`),'中学课程表.xlsx');
   assert.equal(await js('listCalls.at(-1).storage'),'local');assert.equal(await js('previewCalls'),0);
@@ -71,25 +71,16 @@ if(typeof electron==='string'){
   for(const storage of ['local','nfs','minio']){
    await js(`deliveryBackend='${storage}';`);
    for(const ext of ['doc','docx','xls','xlsx','xlsm','ppt','pptx','zip','7z','html','md','txt','png','pdf']){
-    const name=ext+'-'+storage,previewable=['html','md','txt','png','pdf'].includes(ext);
+    const name=ext+'-'+storage;
     await js(`render('${name}');`);
-    assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`),true,'No preview before saving');
+    assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`),0,'No separate preview action before saving');
     await click('[data-delivery-retry]');
     assert.equal(await js(`document.querySelector('[data-delivery-retry]').innerText`),'已保存到资料库');
-    assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`),!previewable,storage+': '+ext);
+    assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`),0,storage+': '+ext);
     await js(`render('${name}');`);
-    assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`),!previewable,'Same policy after rerender');
-    const previews=await js('previewCalls'),routeCount=await js('routes.length');
-    if(!previewable){
-     await js(`ChatDeliveries.handle(document.querySelector('[data-delivery-open]'),api);`);
-     assert.equal(await js('previewCalls'),previews);assert.equal(await js('routes.length'),routeCount);
-    }else if(storage==='local'){
-     await click('[data-delivery-open]');
-     for(let i=0;i<40&&await js('previewCalls')===previews;i++)await delay(25);
-     assert.equal(await js('previewCalls'),previews+1,ext+' explicit preview');
-    }
+    assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`),0,'Same policy after rerender');
    }
-   report.cases.push(storage+': Office/archive files never expose saved preview; HTML, Markdown, text, image and PDF retain it, including rerender');
+   report.cases.push(storage+': saved file cards retain a single library action across supported formats and rerenders');
   }
   await js(`deliveryBackend='local';render('md-bundle');
    const second={...currentFile,artifactId:'second-md',name:'second.md'};
@@ -99,7 +90,7 @@ if(typeof electron==='string'){
    messages.innerHTML='<article class="nmsg ai"><div class="ntext">Two generated files</div></article>';
    ChatDeliveries.decorate(messages,[currentFile,second],'bundle',{status:'idle'});`);
   await click('[data-delivery-retry]');
-  assert.equal(await js(`document.querySelector('[data-delivery-open]').hidden`),true,'A ZIP package of previewable documents has no package preview icon');
+  assert.equal(await js(`document.querySelectorAll('[data-delivery-open]').length`),0,'A ZIP package of previewable documents has no package preview icon');
   await shot('bundle-saved');
   report.cases.push('Multi-file ZIP result retains save/reveal actions without a preview icon');
   for(const locale of ['zh-CN','en-US','ja-JP','ko-KR']){

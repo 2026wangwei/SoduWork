@@ -51,32 +51,64 @@ function during(stat, window) {
   return changed >= window.start && changed <= window.end && modified >= window.start && modified <= window.end;
 }
 
-function classify(root, files, window) {
+function classify(root, files, window, snapshot, executionCwd) {
   // Only classify verified file identities. Even a valid manifest cannot add
   // paths absent from this inventory, or grant a renderer directory access.
   let primary;
-  if (window) try {
+  const processFiles = new Set();
+  let references, wantsCaptures;
+  if (snapshot) {
+    const selection = require('./delivery-selection');
+    const { request, answer } = selection.turn(snapshot);
+    references = contract.replyReferences(root, answer);
+    wantsCaptures = selection.requestsCaptures(request);
+    if (!wantsCaptures) {
+      const captures = require('./screenshot-evidence').capturePaths(executionCwd || root, snapshot, references.previews);
+      for (const file of files) {
+        if (captures.has(process.platform === 'win32' ? file.path.toLowerCase() : file.path)) processFiles.add(file.relative);
+      }
+    }
+  }
+  const start = epoch(snapshot?.startedAt);
+  const manifestWindow = window || (start && { start, end: Date.now() + 1 });
+  if (manifestWindow) try {
     const manifest = path.join(root, contract.MANIFEST_RELATIVE);
     assertNoLinks(root, manifest);
     const stat = fs.lstatSync(manifest, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || !during(stat, window)) throw Error('Unverified delivery manifest');
+    if (!stat.isFile() || stat.nlink !== 1n || !during(stat, manifestWindow)) throw Error('Unverified delivery manifest');
     const verified = require('./metadata-snapshot.cjs').read(root, manifest, { maxBytes: 256 * 1024 });
     if (!versions.same(versions.stamp(stat), versions.stamp(verified.stat))) throw Error('Delivery manifest changed');
     const parsed = JSON.parse(verified.bytes);
     if (parsed.schemaVersion === 1 && Array.isArray(parsed.deliverables)) {
       const byPath = new Map(files.map(file => [file.relative, file]));
+      for (const name of Array.isArray(parsed.processFiles) ? parsed.processFiles : []) {
+        if (byPath.has(name)) processFiles.add(name);
+      }
+      for (const spec of parsed.deliverables) {
+        const name = spec?.path || spec?.entry;
+        if (byPath.has(name) && versions.recordedEvidence({ relative: name, role: spec.role })) processFiles.add(name);
+      }
       primary = new Map((parsed.presentation === 'summary' ? [] : parsed.deliverables)
         .filter(spec => spec && byPath.has(spec.path || spec.entry) && spec.primary !== false)
         .map(spec => [spec.path || spec.entry, { title: String(spec.title || '').slice(0, 160) }]));
     }
   } catch (_) { /* Legacy workspaces may have no manifest. */ }
-  primary ||= new Map(contract.infer(files, root).items.map(file => [file.relative, file]));
+  if (!primary) {
+    primary = new Map(contract.infer(files, root).items.map(file => [file.relative, file]));
+    if (wantsCaptures && references.linked.size) {
+      const nominated = contract.fromReply(root, snapshot, { files: files.map(file => ({ ...file, changedInTurn: true })) }, references);
+      for (const file of nominated.delivery?.items || []) {
+        if (file.kind === 'image') primary.set(file.relative, file);
+      }
+    }
+  }
   return files.map(file => {
     const declared = primary.get(file.relative), kind = deliverable(file.relative) || 'file';
+    const evidence = processFiles.has(file.relative) || versions.recordedEvidence(file) || (!declared && contract._isProcess(file));
     return { ...file, ...declared, kind, artifactId: contract._artifactId(kind, file.relative),
-      title: declared?.title || file.name, primary: Boolean(declared),
+      title: declared?.title || file.name, primary: Boolean(declared) && !evidence,
       preview: ['website', 'image', 'video', 'pdf'].includes(kind),
-      processEvidence: !declared && contract._isProcess(file) };
+      processEvidence: evidence };
   });
 }
 
@@ -118,7 +150,7 @@ async function journalFiles(root, journal, maxFileBytes) {
   return files;
 }
 
-async function capture({ row, workRoot, workspace, previous, retained, journal, verifiedTransfer = false, verifiedTurn = false, nativePiEvidence = false }) {
+async function capture({ row, workRoot, workspace, previous, retained, journal, verifiedTransfer = false, verifiedTurn = false, nativePiEvidence = false, snapshot, executionCwd }) {
   if (!row.cwd || !path.isAbsolute(row.cwd)) return null;
   let root;
   try { root = realpath(row.cwd); } catch (_) { return previous || null; }
@@ -173,7 +205,7 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
   files.push(...changes);
   if (files.length) {
     const expected = new Map(files.map(file => [file.relative, file.verifiedStamp]));
-    const indexed = versions.capture(root, { items: classify(root, files, window) }, { sessionId: row.id, adapterId: row.adapterId });
+    const indexed = versions.capture(root, { items: classify(root, files, window, verifiedTurn && snapshot, executionCwd) }, { sessionId: row.id, adapterId: row.adapterId });
     for (const entry of indexed.items) {
       const relative = entry.metadata.relative;
       if (!versions.same(expected.get(relative), entry.stamp)) continue;
@@ -186,8 +218,15 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
         if (Number.isSafeInteger(owner.userMessageIndex) && owner.userMessageIndex >= 0)
           entry.source.userMessageIndex = owner.userMessageIndex;
       }
-      if (!entry.source?.turnId && versions.same(records.get(relative)?.stamp, entry.stamp))
-        entry.source = records.get(relative).source;
+      const recorded = records.get(relative);
+      if (recorded && versions.same(recorded.stamp, entry.stamp)) {
+        if (!entry.source?.turnId) entry.source = recorded.source;
+        // A journal proves the bytes. Its metadata may omit the tool's screenshot role.
+        if (versions.recordedEvidence(recorded.metadata)) {
+          entry.metadata.processEvidence = true;
+          entry.metadata.primary = false;
+        }
+      }
       records.set(relative, entry);
     }
   }

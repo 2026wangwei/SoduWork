@@ -234,3 +234,81 @@ test('an unresolved restored Markdown link cannot open a same-named file from th
   assert.equal(f.wb.state().open, false);
   assert.equal(f.wb.openLink('https://example.test/', { source }), true);
 });
+
+test('a manually closed live delivery card reopens the frozen file from its own turn', async () => {
+  const f = fixture();
+  const file = { artifactId: 'web', kind: 'website', name: 'index.html', relative: 'index.html', primary: true };
+  const version = turnId => ({ ...file, artifactId: 'version:' + turnId, versionId: turnId,
+    originalArtifactId: file.artifactId, turnId, archivedReadOnly: true });
+  const source = { closest: selector => selector === '[data-output-task]'
+    ? { dataset: { outputTask: '', deliveryTurn: 'second' } } : selector === '[data-delivery]' ? {} : null };
+  const snapshot = { messages: [] };
+  f.wb.render(f.current.root, snapshot, [file]);
+  assert.equal(f.wb.openOutput('web', { source }), true);
+  f.wb.toggle();
+  f.wb.render(f.current.root, snapshot, [file, version('first'), version('second')]);
+  assert.equal(f.wb.state().open, false);
+  assert.equal(f.wb.openOutput('web', { source }), true);
+  await f.flush();
+  assert.equal(f.requests.at(-1)?.artifactId, 'version:second');
+  assert.equal(f.wb.state().open, true);
+  f.wb.toggle();
+  const owner = source.closest('[data-output-task]');
+  source.closest = selector => selector === '[data-output-task]' ? owner : selector === '[data-delivery]' ? {} : null;
+  owner.dataset.deliveryArchiveIds = 'version:second';
+  assert.equal(f.wb.openOutput('web', { source }), true, 'matching turn and archive ID refer to a single version');
+  f.wb.toggle();
+  delete owner.dataset.deliveryTurn;
+  owner.dataset.deliveryRestored = 'true';
+  assert.equal(f.wb.openOutput('web', { source }), true, 'a legacy receipt identifies its verified version');
+  f.wb.toggle();
+  owner.dataset.deliveryArchiveIds = 'version:first version:second';
+  assert.equal(f.wb.openOutput('web', { source }), false, 'ambiguous frozen versions cannot open a different turn');
+  assert.equal(f.wb.state().open, false);
+});
+
+test('a requirement card reopens the exact materialized attachment after closing its preview', async () => {
+  const f = fixture();
+  const file = f.task({ artifactId: 'task-output:request-a:current', taskId: 'request-a', attachmentId: 'current',
+    name: 'index.html', kind: 'website' });
+  const local = { ...file, artifactId: '', path: 'C:/verified/current/index.html', remoteMaterialized: true,
+    cloudTaskId: file.taskId, remoteAttachmentId: file.attachmentId };
+  f.materializations[0].resolve(local);
+  await tick(); await f.flush();
+  const initial = f.requests.at(-1);
+  assert.match(JSON.stringify(initial), /verified\/current/);
+  f.click('data-wb-close');
+  assert.equal(f.wb.state().open, false);
+  assert.equal(f.wb.openOutput(file.artifactId), true, 'the mounted card still carries the original task-output ID');
+  await f.flush();
+  assert.equal(f.wb.state().open, true);
+  assert.equal(f.materializations.length, 1);
+  f.click('data-wb-close');
+  const other = { ...local, artifactId: 'reused-id', attachmentId: 'other', remoteAttachmentId: 'other',
+    path: 'C:/verified/other/index.html' };
+  f.wb.render(f.current.root, { messages: [] }, [other, local]);
+  const row = { dataset: { outputTaskId: 'request-a', outputAttachmentId: 'current' } };
+  const source = { closest: selector => selector === '.noutput-library-row' ? row : null };
+  assert.equal(f.wb.openOutput('reused-id', { source }), true);
+  await f.flush();
+  assert.equal(f.requests.at(-1).tabId, initial.tabId, 'reopens the original verified preview tab');
+  row.dataset.outputAttachmentId = 'missing';
+  assert.equal(f.wb.openOutput('reused-id', { source }), false, 'another round cannot supply a replacement');
+});
+
+for (const cloudPending of [false, true]) {
+  test('clicking a closed card reactivates its pending ' + (cloudPending ? 'cloud' : 'task') + ' preview', async () => {
+    const f = fixture();
+    f.window.ChatOutputLinks.materialize = f.window.ChatOutputLinks.materializeTask;
+    f.wb.openLink('https://example.test');
+    const file = f.task({ artifactId: 'task-output:t:a', taskId: 't', attachmentId: 'a', name: 'report.html',
+      kind: 'website', cloudPending });
+    f.click('data-wb-close');
+    assert.equal(f.wb.openOutput(file.artifactId), true);
+    assert.equal(f.materializations.length, 1, 'the pending download is reused');
+    f.materializations[0].resolve({ artifactId: 'local-report', name: 'report.html', path: 'C:/verified/report.html' });
+    await tick(); await f.flush();
+    assert.equal(f.wb.state().open, true);
+    assert.match(f.current.tabs.innerHTML, /report.html/);
+  });
+}

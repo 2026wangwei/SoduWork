@@ -196,6 +196,7 @@ function fromManifest(cwd, files, manifest) {
       );
       return;
     }
+    if (require('./screenshot-evidence').isReserved(rel)) return;
     let file = byRel.get(rel);
     if (!file) {
       try {
@@ -348,9 +349,25 @@ function classify(cwd, files) {
   return result;
 }
 
+function replyReferences(cwd, answer) {
+  const linked = new Set(), previews = new Set();
+  if (!cwd || !answer || answer.length > 256 * 1024) return { linked, previews };
+  const markdown = require('../../core/markdown');
+  markdown.walkTokens(markdown.lexer(answer), token => {
+    if (!['image', 'link'].includes(token.type) || !token.href || /^(?:[a-z][a-z0-9+.-]*:|[/]{2}|#)/i.test(token.href)) return;
+    try {
+      const target = path.resolve(cwd, decodeURIComponent(token.href));
+      if (!kindOf(target) || !inside(cwd, target)) return;
+      if (token.type === 'link') linked.add(target);
+      if (/\.(?:png|jpe?g|webp|gif)$/i.test(target) && /截图|screen[ -]?(?:shot|capture)/i.test(token.text || '')) previews.add(target);
+    } catch (_) { /* Invalid URL encoding is not a file reference. */ }
+  });
+  return { linked, previews };
+}
+
 // A final reply can nominate an output already observed during this turn.
 // A link alone never grants access to a file or satisfies execution checks.
-function fromReply(cwd, snapshot, scanned) {
+function fromReply(cwd, snapshot, scanned, references) {
   if (!cwd || !scanned?.files?.length) return scanned;
   const existing = scanned.delivery?.source === 'manifest';
   if (existing && (!scanned.turnSince || scanned.delivery.presentation === 'summary' || scanned.delivery.warnings?.length))
@@ -359,15 +376,7 @@ function fromReply(cwd, snapshot, scanned) {
   const { request, answer } = selection.turn(snapshot || {});
   if (!answer) return scanned;
   if (answer.length > 256 * 1024) return scanned;
-  const markdown = require('../../core/markdown');
-  const linked = new Set();
-  markdown.walkTokens(markdown.lexer(answer), token => {
-    if (token.type !== 'link' || !token.href || /^(?:[a-z][a-z0-9+.-]*:|[/]{2}|#)/i.test(token.href)) return;
-    try {
-      const target = path.resolve(cwd, decodeURIComponent(token.href));
-      if (kindOf(target) && inside(cwd, target)) linked.add(target);
-    } catch (_) { /* Invalid URL encoding is not a file reference. */ }
-  });
+  const { linked, previews } = references || replyReferences(cwd, answer);
   if (!linked.size) return scanned;
   if (existing) {
     // An explicitly updated manifest and policies for grouped, withdrawn or
@@ -390,7 +399,7 @@ function fromReply(cwd, snapshot, scanned) {
   for (const file of scanned.files) {
     if (!file.changedInTurn || !file.path || !file.relative || file.processEvidence ||
         isProcess(file) && !(requestCaptures && kindOf(file.relative) === 'image') || !kindOf(file.relative) ||
-        !linked.has(path.resolve(file.path))) continue;
+        !linked.has(path.resolve(file.path)) || !requestCaptures && previews.has(path.resolve(file.path))) continue;
     try {
       portablePath(file.relative);
       if (file.relative.split('/').some(part => part.startsWith('.') || excludedName(part))) continue;
@@ -427,6 +436,7 @@ module.exports = {
   readManifest,
   instructions,
   fromReply,
+  replyReferences,
   _inside: inside,
   _isProcess: isProcess,
   _kindOf: kindOf,

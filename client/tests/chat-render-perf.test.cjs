@@ -408,6 +408,8 @@ test('streaming carry follows the absolute owner across a sliding window and cap
 test('a one-message history shift cannot carry a delivery into an assistant row reused as a user', () => {
   const { _syncMessage } = require('../components/panels/chat-dom-patch');
   const list = doc.createElement('div'), old = deliveryMessage(3, 105), card = deliveryCard();
+  old.dataset.deliveryTurn = 'old-turn'; old.dataset.deliveryArchiveIds = 'version:old';
+  old.dataset.deliveryRestored = 'true'; old.dataset.outputTask = 'old-task';
   old.appendChild(card); list.appendChild(old);
   const captured = carry.capture(list), actualOwner = deliveryMessage(2, 105);
   const user = doc.createElement('div'); user.className = 'nmsg user'; user.dataset.chatNode = 'message:3';
@@ -419,6 +421,7 @@ test('a one-message history shift cannot carry a delivery into an assistant row 
   assert.equal(old.dataset.messageOwner, undefined);
   assert.equal(old.dataset.deliveryFinal, undefined);
   assert.equal(old.dataset.deliveryCurrent, undefined);
+  for (const name of ['deliveryTurn', 'deliveryArchiveIds', 'deliveryRestored', 'outputTask']) assert.equal(old.dataset[name], undefined, name);
 });
 
 test('settled carry keeps a delivery with its absolute owner instead of the reused local reply index', () => {

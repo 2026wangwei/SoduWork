@@ -43,7 +43,8 @@ if (typeof electron === 'string') {
   }
   async function startServer() {
     const probe = require('node:net').createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve)); const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
-    server = spawn(path.join(backend, '.venv/Scripts/python.exe'), ['-m', 'uvicorn', 'tests.library_browser_server:app', '--host', '127.0.0.1', '--port', String(port)], {
+    const python = process.env.SODUWORK_TEST_PYTHON || path.join(backend, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+    server = spawn(python, ['-m', 'uvicorn', 'tests.library_browser_server:app', '--host', '127.0.0.1', '--port', String(port)], {
       cwd: backend, windowsHide: true, env: { ...process.env, SODUWORK_LIBRARY_E2E_ROOT: root }, stdio: ['ignore', 'pipe', 'pipe'] });
     server.stdout.on('data', data => logs += data); server.stderr.on('data', data => logs += data); url = 'http://127.0.0.1:' + port;
     for (let i = 0; i < 180; i++) { try { if ((await fetch(url + '/ready')).ok) return; } catch {} if (server.exitCode !== null) break; await tick(); }
@@ -101,14 +102,14 @@ if (typeof electron === 'string') {
     // while keeping its real HTTP transport, manifest verification and storage.
     await js(`SoduWorkAPI.saveLibraryDelivery=payload=>SoduWorkAPI.publishDelivery(payload);
       SoduWorkAPI.getLibraryDeliveryStatus=async manifest=>{const result=await SoduWorkAPI.listDeliveries({sessionId:manifest.sessionId,source:'local',revision:manifest.revision,limit:1});return{ok:true,delivery:result.items[0]||null};};void 0;`);
-    await js(`messages.addEventListener('click',e=>{const b=e.target.closest('[data-delivery-download],[data-delivery-reveal],[data-delivery-archive],[data-delivery-retry],[data-delivery-open]');if(b)window.pendingDelivery=ChatDeliveries.handle(b,soduWorkAPI.conversationSession);});window.showLibrary=async()=>{const response=await SoduWorkAPI.listDeliveries();library.innerHTML=response.items.map(d=>'<button data-open-delivery="'+d.id+'">'+d.title+'</button>').join('');};library.onclick=e=>{const b=e.target.closest('[data-open-delivery]');if(b)void LibraryDelivery.open(b.dataset.openDelivery)};void 0;`);
+    await js(`messages.addEventListener('click',e=>{const b=e.target.closest('[data-delivery-download],[data-delivery-reveal],[data-delivery-archive],[data-delivery-retry]');if(b)window.pendingDelivery=ChatDeliveries.handle(b,soduWorkAPI.conversationSession);});window.showLibrary=async()=>{const response=await SoduWorkAPI.listDeliveries();library.innerHTML=response.items.map(d=>'<button data-open-delivery="'+d.id+'">'+d.title+'</button>').join('');};library.onclick=e=>{const b=e.target.closest('[data-open-delivery]');if(b)void LibraryDelivery.open(b.dataset.openDelivery)};void 0;`);
     await render('single-session');
     assert.equal(uploadRequests, 0);
     assert.equal(await js('document.querySelectorAll(".ndelivery").length'), 1);
     assert.equal(await js('document.querySelectorAll("[data-delivery-download]").length'), 0);
     assert.equal(await js('document.querySelector("[data-delivery-retry]").hidden'), false);
     assert.equal(await js('document.querySelector("[data-delivery-retry]").getAttribute("aria-label")'), '保存到资料库');
-    assert.equal(await js('document.querySelector("[data-delivery-open]").hidden'), true);
+    assert.equal(await js('document.querySelectorAll("[data-delivery-open]").length'), 0);
     assert.equal(downloads.length,0);
     report.cases.push('PC single-file result operates the local file without a download action');
     downloads.length = 0;
@@ -117,9 +118,7 @@ if (typeof electron === 'string') {
     await click('[data-delivery-retry]'); await until(`document.querySelector('[data-delivery-status]').textContent.includes('已保存')`);
     assert.equal(await js('document.querySelector("[data-delivery-retry]").hidden'), false);
     assert.equal(await js('document.querySelector("[data-delivery-retry] .ndelivery-action-label").textContent'), "已保存到资料库");
-    assert.equal(await js('document.querySelector("[data-delivery-open]").hidden'), false);
-    assert.equal(await js('document.querySelector("[data-delivery-open]").getAttribute("aria-label")'), '预览已保存版本');
-    assert.equal(await js('Boolean(document.querySelector("[data-delivery-open] svg circle[cx=\\"12\\"][cy=\\"12\\"][r=\\"3\\"]"))'), true);
+    assert.equal(await js('document.querySelectorAll("[data-delivery-open]").length'), 0);
     assert.equal((await js('SoduWorkAPI.listDeliveries()')).items.length, 1);
     report.cases.push('Local single file: preview, resolved location and explicit publish through actual API'); await shot('single-file');
     const revision = await js(`soduWorkAPI.conversationSession.prepareDelivery(currentRef,currentFiles.map(f=>f.artifactId)).then(p=>SoduWorkAPI.publishDelivery(p))`);
@@ -143,17 +142,16 @@ if (typeof electron === 'string') {
     const beforeOldVersion = downloads.length;
     await click('[data-delivery-reveal]'); assert.equal(downloads.length,beforeOldVersion);
     assert.match(fs.readFileSync(locations.at(-1).file,'utf8'), /下一轮/);
-    await click('[data-delivery-open]'); await until(`document.querySelector('.ldelivery-preview h1')?.textContent==='调研报告'`); await click('[data-delivery-close]');
+    await js('showLibrary()');
+    const savedButton = '[data-open-delivery="' + (await js('SoduWorkAPI.listDeliveries()')).items[0].id + '"]';
+    await click(savedButton); await until(`document.querySelector('.ldelivery-preview h1')?.textContent==='调研报告'`); await click('[data-delivery-close]');
     report.cases.push('Open location uses the current edited working file; saved-version preview keeps the immutable original');
     fs.unlinkSync(path.join(sessions['single-session'].cwd,'报告.md'));
     const beforeMissing = downloads.length;
     await click('[data-delivery-reveal]'); assert.equal(downloads.length,beforeMissing);
     assert.match(await js(`document.querySelector('[data-delivery-status]').textContent`), /已不存在/);
-    await click('[data-delivery-open]'); await until(`document.querySelector('.ldelivery-preview h1')?.textContent==='调研报告'`);
-    assert.equal(await js(`document.querySelector('[data-delivery-all]').textContent`),'打开当前本地文件');
-    await click('[data-delivery-all]');
-    assert.equal(downloads.length,beforeMissing);
-    assert.match(await js(`document.querySelector('[data-delivery-error]').textContent`),/已不存在/);
+    await click(savedButton); await until(`document.querySelector('.ldelivery-preview h1')?.textContent==='调研报告'`);
+    assert.equal(downloads.length, beforeMissing);
     assert.equal(fs.existsSync(path.join(sessions['single-session'].cwd,'报告.md')), false); await click('[data-delivery-close]');
     report.cases.push('Missing local file retains immutable library preview; no download dialog or silent overwrite');
     blockUpload = true; await render('website-session', true); await click('[data-delivery-retry]'); await until(`document.querySelector('[data-delivery-status]').textContent.includes('重试')`);
@@ -269,24 +267,25 @@ if (typeof electron === 'string') {
     report.cases.push('Ordinary task result retains the existing save action without calling cloud-conversation archive');
     // Only cloud task -> library receipt lookup is synthetic here. The rendered
     // controls, file manifest, immutable HTTP bytes and download are real.
-    await js(`window.originalTaskSync=SoduWorkAPI.syncTaskDelivery;void 0;`);
+    await js(`window.originalTaskSave=SoduWorkAPI.saveTaskLibraryDelivery;window.originalTaskLookup=SoduWorkAPI.getTaskLibraryDeliveryStatus;void 0;`);
     for (const delivery of [single, multi]) {
       const taskId = 'remote-' + delivery.id;
       const files = delivery.files.map((file, index) => ({artifactId:'task-output:' + taskId + ':' + index, taskId,
         attachmentId:String(index), role:'output', round:1, name:path.basename(file.path), relative:file.path, size:file.size, at:1}));
       const beforeRemote = downloads.length, beforeLocations = locations.length;
-      await js(`currentRef=${JSON.stringify(taskId)};currentFiles=${JSON.stringify(files)};currentSnapshot={status:'idle',cloudHandoff:{taskId:currentRef}};SoduWorkAPI.syncTaskDelivery=async()=>({ok:true,delivery:${JSON.stringify(delivery)}});messages.innerHTML='<article class="nmsg ai" data-output-task="'+currentRef+'"><p>远程执行完成。</p></article>';ChatDeliveries.decorate(messages,currentFiles,currentRef,currentSnapshot);void 0;`);
+      await js(`currentRef=${JSON.stringify(taskId)};currentFiles=${JSON.stringify(files)};currentSnapshot={status:'idle',cloudHandoff:{taskId:currentRef}};SoduWorkAPI.getTaskLibraryDeliveryStatus=async()=>({ok:true,delivery:null});SoduWorkAPI.saveTaskLibraryDelivery=async()=>({ok:true,delivery:${JSON.stringify(delivery)}});messages.innerHTML='<article class="nmsg ai" data-output-task="'+currentRef+'"><p>远程执行完成。</p></article>';ChatDeliveries.decorate(messages,currentFiles,currentRef,currentSnapshot);void 0;`);
       assert.equal(await js(`document.querySelectorAll('[data-delivery-reveal]').length`),1);
       await js(`ChatDeliveries.hydrate(messages,{api:soduWorkAPI.conversationSession,ref:currentRef,snapshot:currentSnapshot});void 0;`);
       assert.equal(await js(`document.querySelector('[data-delivery-retry]').classList.contains('is-saved')`),false);
       await click('[data-delivery-retry]');
-      await until(`document.querySelector('[data-delivery-status]').textContent.includes('已同步')`);
+      assert.equal(await js(`document.querySelector('[data-delivery-retry]').classList.contains('is-saved')`), true,
+        await js(`document.querySelector('[data-delivery-status]').textContent`));
       assert.equal(await js(`document.querySelectorAll('[data-delivery-download]').length`),0);
-      assert.equal(await js(`document.querySelector('[data-delivery-status]').textContent.includes('本机')`),false);
+      assert.equal(await js(`document.querySelector('[data-delivery-retry]').getAttribute('aria-label')`), '已保存到资料库，点击查看');
       assert.equal(downloads.length,beforeRemote);assert.equal(locations.length,beforeLocations);
       report.cases.push('Remote '+(delivery.files.length===1?'single':'multiple')+' result: shared file-row controls without PC download');
     }
-    await js(`SoduWorkAPI.syncTaskDelivery=originalTaskSync;void 0;`);
+    await js(`SoduWorkAPI.saveTaskLibraryDelivery=originalTaskSave;SoduWorkAPI.getTaskLibraryDeliveryStatus=originalTaskLookup;void 0;`);
     await shot('remote-results');
     const beforeLateError = await js('notices.length');
     await js(`window.lateApi={continueLocalDelivery:()=>new Promise((_,reject)=>{window.rejectOldAction=reject})};window.WorkspaceHost={open:async()=>true};window.pendingDelivery=ChatDeliveries.handle(document.querySelector('[data-delivery-local]'),lateApi);void 0;`);

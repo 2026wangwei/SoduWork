@@ -10,6 +10,12 @@ const MAX_IMAGES = 60, MAX_ENTRIES = 128, MAX_BYTES = 20 * 1024 * 1024;
 const EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 const realpath = fs.realpathSync.native || fs.realpathSync;
 
+function isReserved(relative) {
+  if (typeof relative !== 'string') return false;
+  const normalized = path.posix.normalize(relative.replace(/\\/g, '/'));
+  return /^\.soduwork\/evidence\//i.test(normalized) && EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
 function directory(root) {
   let target = root;
   for (const part of ['.soduwork', 'evidence']) {
@@ -81,26 +87,38 @@ function collect(cwd, options = {}) {
 
 function toolPaths(cwd, tools = []) {
   const paths = new Set();
-  const add = value => {
+  const add = (base, value) => {
     if (typeof value !== 'string' || !/\.(?:png|jpe?g|webp)$/i.test(value)) return;
-    const target = path.resolve(cwd, value), rel = path.relative(path.resolve(cwd), target);
+    const target = path.resolve(base, value), rel = path.relative(path.resolve(cwd), target);
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) paths.add(process.platform === 'win32' ? target.toLowerCase() : target);
   };
   for (const tool of tools) {
     if (tool?.state !== 'done' || tool.isError) continue;
     const args = tool.args || {};
+    const workingDir = args.workdir || args.cwd;
+    const base = typeof workingDir === 'string' ? path.resolve(cwd, workingDir) : cwd;
     if (/screenshot|screen_capture/i.test(tool.name || ''))
-      [args.path, args.filename, args.filePath, args.file_path].forEach(add);
+      [args.path, args.filename, args.filePath, args.file_path].forEach(value => add(base, value));
     // Recognize literal browser capture destinations, never arbitrary image mentions.
     const command = String(args.command || args.cmd || args.code || '');
-    for (const match of command.matchAll(/\.screenshot\s*\(\s*\{?\s*[\s\S]{0,120}?['"]?\bpath['"]?\s*[:=]\s*(['"])([^'"\r\n]+)\1/g)) add(match[2]);
+    for (const match of command.matchAll(/\.screenshot\s*\(\s*\{?\s*[\s\S]{0,120}?['"]?\bpath['"]?\s*[:=]\s*(['"])([^'"\r\n]+)\1/g)) add(base, match[2]);
     // CDP returns base64 bytes rather than writing a file itself. Recognize
     // literal writes of that response, not every image mentioned by a script.
     if (/Page\.captureScreenshot/.test(command)) {
-      for (const match of command.matchAll(/(?:writeFile(?:Sync)?|write_bytes)\s*\(\s*(['"])([^'"\r\n]+)\1\s*,\s*(?:Buffer\.from\([^\n]{0,160}?\.data|base64\.b64decode\()/g)) add(match[2]);
+      for (const match of command.matchAll(/(?:writeFile(?:Sync)?|write_bytes)\s*\(\s*(['"])([^'"\r\n]+)\1\s*,\s*(?:Buffer\.from\([^\n]{0,160}?\.data|base64\.b64decode\()/g)) add(base, match[2]);
     }
   }
   return paths;
 }
 
-module.exports = { collect, toolPaths };
+function capturePaths(cwd, snapshot, previews) {
+  // Tool positions are relative to the snapshot's visible messages. A later
+  // turn can legitimately replace a browser capture with a requested image.
+  const start = (snapshot.messages || []).findLastIndex(message => message?.role === 'user');
+  const tools = (snapshot.tools || []).filter(tool => (tool?.after ?? 0) >= start);
+  const paths = toolPaths(cwd, tools);
+  for (const target of previews) paths.add(process.platform === 'win32' ? target.toLowerCase() : target);
+  return paths;
+}
+
+module.exports = { collect, toolPaths, capturePaths, isReserved };

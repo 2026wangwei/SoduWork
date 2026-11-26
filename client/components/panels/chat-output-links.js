@@ -347,21 +347,24 @@
   }
   function scoped(node, files) {
     files = asFiles(files);
-    const owner = node.closest('[data-output-task]');
-    if (!owner) return files;
-    const taskId = owner.dataset.outputTask;
+    const owner = node.closest('[data-output-task]')?.dataset;
+    const rowTask = node.closest('.noutput-library-row')?.dataset?.outputTaskId;
+    const ownerTask = owner?.outputTask;
+    if (rowTask && ownerTask && rowTask !== ownerTask) return [];
+    if (!owner && !rowTask) return files;
+    const taskId = rowTask || ownerTask;
     if (!taskId) {
-      if (owner.dataset.deliveryTurn === undefined && !owner.dataset.deliveryRestored) return files;
-      const selection = filesForTurn(files, owner.dataset.deliveryTurn, owner.dataset.deliveryCurrent !== 'false');
-      const selected = owner.dataset.deliveryRestored ? selection.filter(file => file.versionId) : selection;
-      if (!owner.dataset.deliveryArchiveIds) return selected;
-      const archiveIds = new Set(owner.dataset.deliveryArchiveIds.split(' '));
+      if (owner.deliveryTurn === undefined && !owner.deliveryRestored) return files;
+      const selection = filesForTurn(files, owner.deliveryTurn, owner.deliveryCurrent !== 'false');
+      const selected = owner.deliveryRestored ? selection.filter(file => file.versionId) : selection;
+      if (!owner.deliveryArchiveIds) return selected;
+      const archiveIds = new Set(owner.deliveryArchiveIds.split(' '));
       const inferred = files.filter(file => file.versionId && archiveIds.has(key(file)));
       const originals = new Set(inferred.map(file => file.originalArtifactId));
-      return selected.filter(file => !originals.has(key(file))).concat(inferred);
+      return selected.filter(file => !archiveIds.has(key(file)) && !originals.has(key(file))).concat(inferred);
     }
-    const own = files.filter(file => file.taskId === taskId);
-    return own.length ? own : files.filter(file => !file.taskId);
+    const own = files.filter(file => (file.taskId || file.cloudTaskId) === taskId);
+    return own.length ? own : files.filter(file => !file.taskId && !file.cloudTaskId);
   }
   function button(doc, file, text) {
     const node = doc.createElement('button');
@@ -1002,7 +1005,7 @@
     return purifier.sanitize(template.innerHTML, policy);
   }
   const outputRoles = new Set(['output', 'evidence', 'supporting', 'verification']);
-  const evidenceKinds = new Set(['deploy_screenshot', 'screenshot', 'screen_shot', 'screen_capture', 'verification', 'test_evidence']);
+  const evidenceKinds = new Set(['deploy_screenshot', 'screenshot', 'screen_shot', 'screen_capture', 'preview', 'verification', 'test_evidence', 'evidence', 'internal']);
   function rowEvidenceMeta(row) {
     return row && row.evidenceMeta && typeof row.evidenceMeta === 'object' ? row.evidenceMeta : {};
   }
@@ -1011,12 +1014,13 @@
     const role = String(row.role || '').toLowerCase();
     const meta = rowEvidenceMeta(row);
     const normalizeTag = value => String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
-    const kind = normalizeTag(meta.kind || meta.type);
-    const category = normalizeTag(meta.category || row.category);
-    return role === 'evidence' || role === 'verification' || category === 'evidence' ||
-      evidenceKinds.has(kind) || evidenceKinds.has(category);
+    return row.processEvidence === true || ['evidence', 'verification', 'process'].includes(role) ||
+      [meta.kind, meta.type, meta.category, row.category].some(tag => evidenceKinds.has(normalizeTag(tag)));
   }
   const isOutput = row => row && outputRoles.has(String(row.role || '').toLowerCase());
+  function taskOutputId(taskId, attachmentId) {
+    return taskId && attachmentId ? 'task-output:' + encodeURIComponent(taskId) + ':' + encodeURIComponent(attachmentId) : '';
+  }
   async function load(api, ref, taskIds, previous, hub) {
     const local = await api.outputs(ref);
     if (!local || local.ok === false) throw Error('成果索引暂时不可用');
@@ -1059,7 +1063,7 @@
               category: meta.category || row.category || '',
             };
           })(),
-          artifactId:'task-output:'+encodeURIComponent(taskId)+':'+encodeURIComponent(row.id),
+          artifactId:taskOutputId(taskId, row.id),
           taskId, attachmentId:row.id, name:row.filename, relative:row.filename,
           size:row.size, at:Number(row.createdAt)||Date.parse(row.createdAt||'')||0,
           sha256:row.sha256 || row.evidenceMeta?.sha256,
@@ -1107,8 +1111,8 @@
         local.cloudTaskId = row.taskId;
         local.remoteAttachmentId = row.attachmentId;
         local.role = row.role || local.role || 'output';
-        local.primary = row.primary;
-        local.processEvidence = row.processEvidence;
+        local.processEvidence = Boolean(local.processEvidence || row.processEvidence);
+        local.primary = row.primary && !local.processEvidence;
         local.evidenceMeta = row.evidenceMeta;
       } else if (!local && !cloudConversation) {
         // Local-session delivery sync has no proof receipt, but its workspace is authoritative.
@@ -1134,8 +1138,8 @@
           found.attachmentId = row.attachmentId;
           found.remoteAttachmentId = row.attachmentId;
           found.role = row.role || 'output';
-          found.primary = row.primary;
-          found.processEvidence = row.processEvidence;
+          found.processEvidence = Boolean(found.processEvidence || row.processEvidence);
+          found.primary = row.primary && !found.processEvidence;
           found.evidenceMeta = row.evidenceMeta;
           found.round = row.round;
         } else remote.push(row);
@@ -1227,7 +1231,7 @@
   // keyed by (ref + files) signatures so they can never leak across sessions,
   // and the WeakMap drops entries for replaced nodes on its own.
   function resetDecorateCache() { decorateMemo = null; }
-  const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
+  const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,taskOutputId,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
     isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,
     isPluginDraft,pluginDrafts,_supersededDraftCard:supersededDraftCard,_claimInlineMedia:claimInlineMedia,
     _buildLinkIndex:buildLinkIndex,_decorateStateSignature:decorateStateSignature,resetDecorateCache};

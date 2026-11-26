@@ -114,8 +114,13 @@
        every reused row; with content-visibility rows that cost scales with the
        transcript length, so only write when the class actually changed. */
     if (current.className !== next.className) current.className = next.className;
-    if (next.hasAttribute('data-output-task')) current.dataset.outputTask = next.dataset.outputTask;
-    for (const name of ['deliveryFinal', 'deliveryCurrent', 'messageOwner']) {
+    const attributes = ['outputTask', 'deliveryFinal', 'deliveryCurrent', 'messageOwner'];
+    // Raw streaming HTML can carry forward this reply's mounted cards and their
+    // scope. Decorated HTML and reused slots must use the incoming reply's scope.
+    if (!opts.preserveDeco || !sameOwner || next.dataset.deliveryFinal === 'false' || next.dataset.deliveryTurn !== undefined) {
+      attributes.push('deliveryTurn', 'deliveryArchiveIds', 'deliveryRestored');
+    }
+    for (const name of attributes) {
       if (next.dataset[name] !== undefined && current.dataset[name] !== next.dataset[name]) current.dataset[name] = next.dataset[name];
       else if (next.dataset[name] === undefined && current.dataset[name] !== undefined) {
         current.removeAttribute('data-' + name.replace(/[A-Z]/g, char => '-' + char.toLowerCase()));

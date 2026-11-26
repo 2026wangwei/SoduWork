@@ -142,7 +142,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
       if (journal.cwd !== root || !journal.turnId || !journal.files?.length || journal.truncated) return;
       const prior = !priorBody?.imported || locallyReceivedArtifacts(row, priorBody) ? priorBody?.localArtifactHistory : undefined;
       const collected = await require('./device-history-artifacts.cjs').capture({ row: { ...row, cwd: root },
-        previous: prior, journal, verifiedTurn: true });
+        previous: prior, journal, verifiedTurn: true, snapshot, executionCwd: row.cwd });
       if (!collected) return;
       check();
       const profile = app.getPath('userData');

@@ -80,6 +80,65 @@ test('old Runner results recover from an allocated scratch window with no manife
   await assert.rejects(runtime.snapshotAsync(session), /scope changed/);
 });
 
+test('legacy manifests keep preview evidence accessible beside the actual deliveries', async t => {
+  const f = fixture(t), started = Date.now() - 100;
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/askAAAAASUVORK5CYII=', 'base64');
+  const reserved = '.soduwork/evidence/site.png';
+  for (const name of [reserved, 'diagnostics.png', 'trace.png', 'poster.png']) f.write(name, png);
+  f.write('index.html', '<title>Page</title>');
+  f.write('.soduwork/delivery.json', JSON.stringify({
+    schemaVersion: 1, processFiles: ['diagnostics.png'], deliverables: [
+      { path: 'index.html' }, { path: 'poster.png' }, { path: reserved },
+      { path: 'trace.png', primary: true, role: 'verification' }, { path: 'diagnostics.png' },
+    ],
+  }));
+  await delay(5);
+  const history = await project.capture({ ...f, workspace: { id: f.row.id, taskId: f.taskId,
+    cwd: f.cwd, started, ended: Date.now() } });
+  // Old records could mark a capture primary even with the evidence directory or role present.
+  for (const row of history.items) {
+    if (row.metadata.relative === reserved || row.metadata.relative === 'trace.png') {
+      row.metadata.primary = true;
+      delete row.metadata.processEvidence;
+      if (row.metadata.relative === 'trace.png') row.metadata.role = 'verification';
+    }
+  }
+  const view = project.view(f.cwd, history, () => {});
+  const { delivery, items } = view.snapshot();
+  assert.deepEqual(delivery.items.map(item => item.relative).sort(), ['index.html', 'poster.png']);
+  for (const name of [reserved, 'diagnostics.png', 'trace.png']) {
+    const image = items.find(item => item.relative === name);
+    assert.equal(image.processEvidence, true);
+    assert.equal((await runtime.action({ cwd: f.cwd, historyArtifacts: view }, 'legacy-evidence', image.artifactId, 'image-full', {})).ok, true);
+  }
+});
+
+test('current-turn receipts distinguish a preview from a replacement illustration and a requested screenshot file', async t => {
+  const f = fixture(t), journal = require('../main/conversation/file-change-journal');
+  const snapshot = { messages: [], tools: [] };
+  let previous;
+  async function turn(id, request, answer, filename, content, declared) {
+    const before = await journal.snapshot(f.cwd);
+    snapshot.startedAt = Date.now() - 10;
+    snapshot.messages.push({ role: 'user', text: request }, { role: 'assistant', text: answer, done: true });
+    f.write(filename, content);
+    if (declared) f.write('.soduwork/delivery.json', JSON.stringify({ schemaVersion: 1, deliverables: [{ path: filename }] }));
+    else fs.rmSync(path.join(f.cwd, '.soduwork/delivery.json'), { force: true });
+    const changes = journal.compare(before, await journal.snapshot(f.cwd), { turnId: id });
+    previous = await project.capture({ row: f.row, previous, snapshot, journal: changes, verifiedTurn: true });
+    return previous.items.find(row => row.metadata.relative === filename).metadata;
+  }
+  snapshot.tools.push({ name: 'browser_screenshot', state: 'done', after: 1, args: { filename: 'cover.png' } });
+  const preview = await turn('first', '做个网页并展示截图', '[截图](cover.png)', 'cover.png', 'website capture', true);
+  assert.equal(preview.processEvidence, true);
+  const cover = await turn('second', '重新设计封面插画', '[封面](cover.png)', 'cover.png', 'new artwork', true);
+  assert.equal(cover.processEvidence, false);
+  assert.equal(cover.primary, true);
+  const requested = await turn('third', '单独交付网页截图文件', '[截图](screenshot.png)', 'screenshot.png', 'requested screenshot');
+  assert.equal(requested.processEvidence, false);
+  assert.equal(requested.primary, true);
+});
+
 test('old Pi scratch allocations recover shell-generated files only with the original local ref and terminal archive window', async t => {
   const f = fixture(t), id = 'pi-generated', archive = path.join(f.workRoot, 'pi-agent', 'sessions', id + '.jsonl');
   fs.mkdirSync(path.dirname(archive), { recursive: true });

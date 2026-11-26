@@ -195,27 +195,52 @@ function sessionSnapshot(session, scanned, recovered, candidates) {
   if (!scanned) scanned = typeof session.outputSnapshot === 'function'
     ? session.outputSnapshot() : { files: typeof session.outputs === 'function' ? session.outputs() : [] };
   const state = session.snapshot?.() || {};
-  scanned = deliveryContract.fromReply(cwd, state, scanned);
-  const captures = screenshotEvidence.toolPaths(cwd, state.tools || []);
+  const { request, answer } = selection.turn(state);
+  const references = deliveryContract.replyReferences(cwd, answer);
+  // Tool paths are relative to the execution workspace. A conversation's
+  // private delivery folder can be nested under that workspace.
+  const captures = screenshotEvidence.capturePaths(session.deliveryWorkspace?.projectRoot || session.cwd, state, references.previews);
   const declared = deliveryContract.readManifest(cwd);
+  const pathKey = filename => process.platform === 'win32' ? path.resolve(filename).toLowerCase() : path.resolve(filename);
   const processFiles = new Set((Array.isArray(declared?.processFiles) ? declared.processFiles : [])
-    .filter(value => typeof value === 'string').map(value => path.resolve(cwd, value)));
-  const captureKey = file => process.platform === 'win32' ? path.resolve(file.path || '').toLowerCase() : path.resolve(file.path || '');
-  const metadata = file => artifactTitle.decorate(cwd, captures.has(captureKey(file)) ||
-    processFiles.has(path.resolve(file.path || '')) || selection.processRoles.has(file.role) ||
-    deliveryContract._kindOf(file.path) === 'image' && deliveryContract._isProcess(file)
-    ? { ...file, processEvidence: true, evidenceSource: captures.has(captureKey(file)) ? 'capture' : 'manifest', primary: false } : file);
-  const got = { ...scanned, files: savedReports.currentFiles(cwd, scanned?.files, recovered).filter(currentFile).map(metadata) };
+    .filter(value => typeof value === 'string').map(value => pathKey(path.resolve(cwd, value))));
+  for (const spec of declared?.deliverables || []) {
+    const name = spec?.path || spec?.entry;
+    if (typeof name === 'string' && selection.processRoles.has(spec.role))
+      processFiles.add(pathKey(path.resolve(cwd, name)));
+  }
+  // Older image-only manifests may be available before the user text is hydrated.
+  const legacyImageDelivery = !request && scanned.delivery?.source === 'manifest' &&
+    scanned.delivery.items?.every(file => deliveryContract._kindOf(file.path) === 'image');
+  const allowCaptures = selection.requestsCaptures(request) || legacyImageDelivery;
+  function evidenceSource(file, allowCapture) {
+    if (file.processEvidence || selection.processRoles.has(file.role) ||
+        screenshotEvidence.isReserved(file.relative) || file.path && processFiles.has(pathKey(file.path)))
+      return file.evidenceSource || 'manifest';
+    if (file.path && !allowCapture) {
+      if (captures.has(pathKey(file.path))) return 'capture';
+      if (deliveryContract._kindOf(file.path) === 'image' && deliveryContract._isProcess(file)) return 'manifest';
+    }
+    return '';
+  }
+  function metadata(file, allowCapture = false) {
+    const source = evidenceSource(file, allowCapture);
+    return artifactTitle.decorate(cwd, source ? { ...file, processEvidence: true, evidenceSource: source, primary: false } : file);
+  }
+  // Preview-only links cannot replace a valid inferred delivery, even if the
+  // assistant linked only the screenshot and left the website itself unlinked.
+  for (const file of scanned.files || []) {
+    if (file.path && evidenceSource(file, allowCaptures)) references.linked.delete(path.resolve(file.path));
+  }
+  scanned = deliveryContract.fromReply(cwd, state, scanned, references);
+  const got = { ...scanned, files: savedReports.currentFiles(cwd, scanned?.files, recovered).filter(currentFile).map(file => metadata(file)) };
   for (const file of reused) if (!got.files.some(item => item.path === file.path)) got.files.push(file);
   const scannedDelivery = got.delivery || { source: 'legacy', items: got.files };
   const originalDelivery = { ...scannedDelivery, items: [...(scannedDelivery.items || []),
     ...reused.filter(file => !(scannedDelivery.items || []).some(item => item.path === file.path))] };
-  const request = selection.turn(state).request;
-  const allowCaptures = selection.requestsCaptures(request) || !request && originalDelivery.source === 'manifest';
   const delivery = selection.select(cwd, { ...originalDelivery,
     items: originalDelivery.presentation === 'summary' ? [] : savedReports.currentFiles(cwd, originalDelivery.items, recovered)
-      .map(file => allowCaptures && !processFiles.has(path.resolve(file.path || '')) && !selection.processRoles.has(file.role)
-        ? artifactTitle.decorate(cwd, file) : metadata(file))
+      .map(file => metadata(file, allowCaptures))
       .filter(file => !file.processEvidence && currentFile(file)) }, state);
   if (got.delivery) got.delivery = delivery;
   // A primary delivery list is a shortlist, not the set of files a user may
