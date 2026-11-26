@@ -187,7 +187,9 @@ def list_assignees_sync(cfg: dict) -> dict:
 def personal_cloud_authorized(cfg, runner):
     """A server-derived exact owner + runner grant; not inferred from orgs."""
     owner_id = str(cfg.get("personalRunnerOwner") or "")
+    client_id = str(getattr(runner, "client_id", "") or "")
     return bool(owner_id and owner_id == str(getattr(runner, "owner_user_id", "") or "")
+                and (not client_id or client_id in (cfg.get("allowedClients") or []))
                 and runner.id in set(cfg.get("personalRunnerIds") or []))
 
 

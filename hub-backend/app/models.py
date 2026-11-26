@@ -690,6 +690,9 @@ class AiSchedule(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None)
 
+    # Employee selection is restricted to the frozen owner device at save and every dispatch.
+    # Older explicit mobile handoffs and administrator schedules retain their original routing.
+    device_bound_runner: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     owner_client_id: Mapped[str] = mapped_column(String(36), default="")  # Client that owns the task.
     owner_user_id: Mapped[str | None] = mapped_column(String(36), default=None, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

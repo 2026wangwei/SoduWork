@@ -23,6 +23,7 @@ if (typeof electron === 'string') {
   if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
   let win, server, hub, ref, catalogScenario = 'mixed';
   const currentDevice = 'fixture-current-device', otherDevice = 'fixture-other-device', account = 'fixture-owner';
+  const cloudRunner = 'fixture-cloud';
   const managedAgents = ['pi', 'qwen', 'opencode', 'dsh', 'kimi', 'codex-harness'];
   const accountAgents = ['codex'], rows = [], requests = [], privatePreflights = [], fixtureErrors = [];
   const managedModel = { name: 'managed-model', label: 's1', providerId: 'fixture-managed', keyFrom: 'org' };
@@ -31,7 +32,8 @@ if (typeof electron === 'string') {
     modelPick: !accountAgents.includes(cli), nativeModelPick: accountAgents.includes(cli), available: true,
     locations: [
       { assigneeId: 'runner:' + currentDevice + ':' + cli, mode: 'local', label: '本机', clientId: currentDevice },
-      { assigneeId: 'runner:' + otherDevice + ':' + cli, mode: 'remote', label: '远程 Runner', clientId: otherDevice },
+      { assigneeId: 'runner:' + otherDevice + ':' + cli, mode: 'remote', label: '其他电脑', clientId: otherDevice, runnerKind: 'work-computer' },
+      { assigneeId: 'runner:' + cloudRunner + ':' + cli, mode: 'remote', label: '云端 Runner', runnerKind: 'cloud' },
     ],
   })), modelOptions: [managedModel], defaultModel: managedModel.name };
   const identity = () => {
@@ -54,7 +56,7 @@ if (typeof electron === 'string') {
   }
   function mark(value) { report.checks.push(value); console.log('PASS ' + value); }
   async function chooseAgent(cli, remote = false) {
-    const id = 'runner:' + (remote ? otherDevice : currentDevice) + ':' + cli;
+    const id = 'runner:' + (remote ? cloudRunner : currentDevice) + ':' + cli;
     await js(`schWho.value=${JSON.stringify(id)};schWho.dispatchEvent(new Event('change',{bubbles:true}));void 0;`);
     await until(`schWho.value===${JSON.stringify(id)} && !_schEditorPending`);
     if (!remote && accountAgents.includes(cli)) await until(`Array.from(schModel.options).some(o=>o.value===${JSON.stringify('native-' + cli)})`);
@@ -159,6 +161,9 @@ if (typeof electron === 'string') {
     assert.ok(report.options.some(row => row.value === ref && row.label.includes(modelLabel) && row.label.includes('本机')));
     assert.ok(report.options.some(row => row.label === 's1'));
     assert.equal(await js('schWho.value'), 'runner:' + currentDevice + ':pi');
+    assert.equal(await js(`[...schWho.options].some(option => option.value.includes(${JSON.stringify(otherDevice)}))`), false,
+      'a mixed older Hub roster must not offer another installation on the same account');
+    mark('A sibling work computer is absent while this desktop and the authorized standalone cloud remain selectable');
     mark('Opening a concrete current-device Runner lists the shared Hub and encrypted device catalogs');
     assert.equal(await js('schModel.value'), ref, 'new managed forms choose the first local model');
     await js('schModel.value="managed-model";schModel.dispatchEvent(new Event("change",{bubbles:true}));void 0;');

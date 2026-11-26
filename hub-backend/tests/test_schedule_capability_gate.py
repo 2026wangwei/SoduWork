@@ -130,7 +130,7 @@ class PreflightDisambiguationTests(unittest.TestCase):
             async def get(self, model, key):
                 return SimpleNamespace(id=key)
 
-        ctx = SimpleNamespace(_fixture="ctx")
+        ctx = {}
         from app.services import ai_exec
         with patch.object(ai_exec, "load", return_value=ctx), \
              patch("app.services.skills.resolve_named", fake_resolve_named), \
@@ -166,7 +166,7 @@ class PreflightDisambiguationTests(unittest.TestCase):
                 return SimpleNamespace(id=key)
 
         from app.services import ai_exec
-        with patch.object(ai_exec, "load", return_value=SimpleNamespace()), \
+        with patch.object(ai_exec, "load", return_value={}), \
              patch("app.services.skills.resolve_named", fake_resolve_named), \
              patch.object(ai_exec, "resolve_requested_sync", return_value=None), \
              patch("app.services.runner_hub.for_client", return_value=None):

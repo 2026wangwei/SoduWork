@@ -53,7 +53,7 @@ function fixture(existing = null, every = 'once') {
     'panels-schedules.js', 'panels-schedules-editor.js'])
     vm.runInContext(fs.readFileSync(path.join(folder, file), 'utf8'), c, { filename: file });
   c.initial = existing || 'new';
-  vm.runInContext('_schEditing = initial', c);
+  vm.runInContext('_schEditing = initial; _schAgents = [{id:"local:pi",available:true}]', c);
   c._schBrowserTimeZone = () => 'Asia/Shanghai';
   if (existing?.every === 'once') controls.schRunAt.value = c.ScheduleTiming.localMinute(
     existing.runAt, existing.timeZone || 'Asia/Shanghai');
@@ -481,4 +481,13 @@ test('clock options include every boundary without coercing invalid stored value
   assert.match(c.ScheduleTiming.clockOptions(60,888), /value="" selected disabled/);
   assert.ok(c.ScheduleTiming.validate({every:'daily',atHour:0,atMinute:0}) === '');
   assert.ok(c.ScheduleTiming.validate({every:'hourly',atMinute:59}) === '');
+});
+
+test('a draft with a previously listed sibling Runner cannot be saved after the catalog refresh', async () => {
+  const f = fixture();
+  f.controls.schWho.value = 'runner:other-computer:pi';
+  f.wire();
+  await f.save();
+  assert.equal(f.saves.length, 0);
+  assert.ok(f.notices.includes('所选执行底座当前不可用，请刷新后重试'));
 });

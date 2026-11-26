@@ -543,6 +543,7 @@ if (typeof electron === 'string') {
       await js(fs.readFileSync(path.join(client, file), 'utf8') + '\nvoid 0;');
     }
     await js(`window.productionDispatchToAI=SoduWorkAPI.dispatchToAI;
+      window.productionTaskExecutionOptions=SoduWorkAPI.taskExecutionOptions;
       const {clientId,...fixtureAPI}=choiceFixtureAPI;
       Object.defineProperty(SoduWorkAPI,'clientId',{get:()=>clientId});
       Object.assign(SoduWorkAPI,fixtureAPI,{dispatchToAI:productionDispatchToAI});void 0;`);
@@ -557,6 +558,31 @@ if (typeof electron === 'string') {
     };
     win.setContentSize(1280, 960);
 
+    await run('A requirement on device B cannot select device A from a legacy same-account directory', async row => {
+      const targets = [
+        { assigneeId:'runner:sibling:pi', clientId:'fixture-sibling', runnerKind:'work-computer', mode:'remote', label:'Sibling PC' },
+        { assigneeId:'runner:current:pi', clientId:'fixture-client', runnerKind:'work-computer', mode:'local', label:'This PC' },
+        { assigneeId:'runner:cloud:pi', runnerKind:'cloud', mode:'remote', label:'Cloud' },
+      ];
+      await js(`window.originalChoiceFetch=window.fetch; window.User={id:'fixture-client'};
+        window.fetch=async(url,opts)=>{
+          if (!String(url).endsWith('/task-execution-options') || opts.headers['X-Soduwork-Device']!=='fixture-client')
+            throw Error('Unexpected fixture request');
+          const reply=optionsFixture({});reply.substrates=[{key:'local:pi',name:'Pi',cli:'pi',available:true,locations:${JSON.stringify(targets)}}];
+          return new Response(JSON.stringify(reply),{status:200});
+        };
+        SoduWorkAPI.taskExecutionOptions=productionTaskExecutionOptions; void 0;`);
+      try {
+        await open();
+        row.selectable=(await state()).agents.filter(option=>!option.disabled && option.value).map(option=>option.value);
+        assert.deepEqual(row.selectable,['runner:current:pi','runner:cloud:pi']);
+        await select('#fwdAgentSelect','runner:cloud:pi');
+        assert.equal((await state()).agent,'runner:cloud:pi');
+      } finally {
+        await js(`RequirementAssignment.close();SoduWorkAPI.taskExecutionOptions=choiceFixtureAPI.taskExecutionOptions;
+          window.fetch=originalChoiceFetch;delete window.User;void 0;`);
+      }
+    });
     await run('Current-device endpoint aliases collapse without changing model values or leaking Runner identity', async row => {
       await open('local-pending-device-key');
       await until(`Boolean(fixture.localPending.pi && fixture.localPending.codex)`);

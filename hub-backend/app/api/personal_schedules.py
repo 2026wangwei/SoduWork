@@ -12,9 +12,12 @@ from .schedule_contract import schedule_payload
 router = APIRouter()
 
 
-def _my_sch_api(s) -> dict:
+def _my_sch_api(s, client_id="") -> dict:
     from .tasks import _iso_utc
-    return schedule_payload(s, timestamp=_iso_utc)
+    payload = schedule_payload(s, timestamp=_iso_utc)
+    if client_id:
+        payload["isOriginDevice"] = s.owner_client_id == client_id
+    return payload
 
 
 async def _my_sch(session: AsyncSession, sid: str, client: Client, *, lock: bool = False):
@@ -40,7 +43,7 @@ async def my_schedules(client: Client = Depends(current_client),
     rows = (await session.execute(
         _sel(AiSchedule).where(schedule_access.owner_clause(client))
         .order_by(AiSchedule.created_at))).scalars().all()
-    return [_my_sch_api(s) for s in rows]
+    return [_my_sch_api(s, client.id) for s in rows]
 
 
 @router.get("/schedules/templates")
@@ -86,7 +89,7 @@ async def preflight_my_schedule(body: dict = Body(default_factory=dict),
     from ..models import AiSchedule
     from ..services import schedules as sch
 
-    candidate = AiSchedule()
+    candidate = AiSchedule(device_bound_runner=True)
     from ..services import schedule_requirement_source as requirement_source
     source_identity = requirement_source.request_identity(body, client)
     if source_identity:
@@ -101,7 +104,12 @@ async def preflight_my_schedule(body: dict = Body(default_factory=dict),
         candidate = AiSchedule(**{column.key: getattr(saved, column.key) for column in AiSchedule.__table__.columns})
         owner_client_id, owner_user_id = saved.owner_client_id, saved.owner_user_id
     try:
+        old_assignee = candidate.assignee_id
         _sch_apply(candidate, dict(body or {}))
+        if schedule_id and candidate.assignee_id != old_assignee:
+            if owner_client_id != client.id:
+                raise ValueError("请在原设备上修改这条自动化的执行目标")
+            candidate.device_bound_runner = True
         if source_identity:
             candidate.enabled = False
         # Preview the same execution identity that the saved plan will use.
@@ -139,9 +147,9 @@ async def create_my_schedule(body: dict = Body(default_factory=dict),
     identity = requirement_source.request_identity(body, client)
     existing = await requirement_source.replay(session, identity, client)
     if existing is not None:
-        return _my_sch_api(existing)
+        return _my_sch_api(existing, request_owner.id)
     me = await _actor_user(session, client)
-    s = AiSchedule(created_by=(str(me.id) if me else None),
+    s = AiSchedule(device_bound_runner=True, created_by=(str(me.id) if me else None),
                    created_by_name=_actor_label(me, client),
                    org_id=(me.org_id if me else None))
     from ..services.schedule_source_app import clean as clean_source_app
@@ -180,9 +188,9 @@ async def create_my_schedule(body: dict = Body(default_factory=dict),
         existing = await requirement_source.replay(session, identity, request_owner)
         if existing is None:
             raise
-        return _my_sch_api(existing)
+        return _my_sch_api(existing, request_owner.id)
     await session.refresh(s)
-    return _my_sch_api(s)
+    return _my_sch_api(s, client.id)
 
 
 @router.put("/schedules/{sid}")
@@ -193,8 +201,20 @@ async def update_my_schedule(sid: str, body: dict = Body(default_factory=dict),
 
     from .schedule_contract import apply_schedule_update as _sch_apply
     s = await _my_sch(session, sid, client, lock=True)
-    body.pop("ownerClientId", None)        # Do not move personal schedules to another user's machine.
+    body = dict(body)
+    body.pop("ownerClientId", None)
+    if set(body) == {"enabled"} and body["enabled"] is False:
+        # Pausing cannot launch a run, even if the old target is no longer available.
+        s.enabled = False
+        await session.commit()
+        await session.refresh(s)
+        return _my_sch_api(s, client.id)
+    if s.owner_client_id != client.id:
+        raise HTTPException(409, "请在原设备上编辑、启用或运行这条自动化")
+    old_assignee = s.assignee_id
     _sch_apply(s, body)
+    if s.assignee_id != old_assignee:
+        s.device_bound_runner = True
     from ..services import schedules as sch
     try:
         await sch.validate_execution(session, s)
@@ -205,7 +225,7 @@ async def update_my_schedule(sid: str, body: dict = Body(default_factory=dict),
         raise HTTPException(status_code=409, detail=blocker)
     await session.commit()
     await session.refresh(s)
-    return _my_sch_api(s)
+    return _my_sch_api(s, client.id)
 
 
 @router.delete("/schedules/{sid}")
@@ -246,16 +266,11 @@ async def run_my_schedule(sid: str, body: dict = Body(default_factory=dict),
 
     from ..services import schedules as sch
     from ..services import schedule_conversations as conversations
-    s = await _my_sch(session, sid, client)
+    s = await _my_sch(session, sid, client, lock=True)
     instance_id = str(body.get("instanceId") or "").strip()[:80]
-    # A same-account device may trigger a schedule, but a local conversation
-    # remains pinned to the schedule's original desktop. Only that desktop
-    # may reserve/claim the local inbox occurrence. Cloud runs are returned
-    # directly and never pass through the local conversation claim endpoint.
-    local_owner = str(s.owner_client_id or "") == str(client.id or "")
-    out = await sch.execute_one(
-        session, s, trigger="manual",
-        execution_instance=(instance_id if local_owner else ""))
+    if s.owner_client_id != client.id:
+        raise HTTPException(409, "请在原设备上运行这条自动化")
+    out = await sch.execute_one(session, s, trigger="manual", execution_instance=instance_id)
     if not out.get("ok"):
         await session.commit()
         raise HTTPException(status_code=502, detail="没派出去：" + str(out.get("error"))[:200])
@@ -269,7 +284,7 @@ async def run_my_schedule(sid: str, body: dict = Body(default_factory=dict),
     is_local_conversation = bool(
         run is not None and
         dict(run.receipt or {}).get("executionMode") == conversations.PROTOCOL)
-    if instance_id and local_owner and is_local_conversation and run is not None:
+    if instance_id and is_local_conversation and run is not None:
         # The immediate button owns the run before the background worker polls
         # the inbox. This makes the UI open the chat directly and prevents a
         # second client from consuming the same occurrence first.

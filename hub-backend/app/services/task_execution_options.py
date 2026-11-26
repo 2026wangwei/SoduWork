@@ -334,14 +334,12 @@ async def build(
     # Stale process caches would hide newly configured executors during creation or retry.
     ctx = ai_exec.with_client_runner_scope(await ai_exec.load(session, force=True), client.id)
     roster = await asyncio.to_thread(ai_exec.list_assignees_sync, ctx)
-    # The normal employee scope intentionally exposes only the current
-    # device.  For a task created on mobile/Web, add the same-account remote
-    # targets authorized by the handoff directory.  This is a display-only
-    # merge; dispatch still revalidates the concrete assignee and runner at the
-    # final boundary, so a stale target cannot silently fall back locally.
+    # Add the external targets authorized for this device. A separate desktop
+    # on the same account may accept conversation handoffs, but cannot be
+    # selected for this device's requirement.
     remote_targets = []
     try:
-        remote_targets = await conversation_handoffs.targets(session, client)
+        remote_targets = await conversation_handoffs.targets(session, client, device_bound=True)
     except Exception:
         # A transient directory problem must not hide healthy local choices.
         remote_targets = []

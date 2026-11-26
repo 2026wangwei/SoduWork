@@ -79,11 +79,17 @@ function _addAvailable(item) {
   return normalized !== 'false' && normalized !== '0' &&
     normalized !== 'no' && normalized !== 'offline' && normalized !== 'unavailable';
 }
+function _goStorageKey() {
+  const scope = window.SoduWorkAPI?.taskStorageKey?.('ops');
+  return scope ? _GO_KEY + '@' + encodeURIComponent(scope) : '';
+}
 function _goLast() {
-  try { return JSON.parse(localStorage.getItem(_GO_KEY) || '{}') || {}; } catch (e) { return {}; }
+  const key = _goStorageKey();
+  try { return key && JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch (e) { return {}; }
 }
 function _goRemember(v) {
-  try { localStorage.setItem(_GO_KEY, JSON.stringify(v)); } catch (e) { /* Continue without persistence when storage is unavailable. */ }
+  const key = _goStorageKey();
+  try { if (key) localStorage.setItem(key, JSON.stringify(v)); } catch (e) { /* Storage can be unavailable. */ }
 }
 let _addGoLoadSeq = 0;
 let _addGoReloadTimer = 0;
@@ -92,6 +98,15 @@ let _addGoQueryKey = '';
 let _addGoRepos = [];
 let _addGoOptions = null;
 let _addGoPluginRenderKey = '';
+
+window.addEventListener?.('soduwork-data-scope-changed', () => {
+  ++_addGoLoadSeq;
+  clearTimeout(_addGoReloadTimer);
+  _addGoPending = Promise.resolve();
+  _addGoQueryKey = ''; _addGoOptions = null; _addGoRepos = [];
+  _addGoPluginRenderKey = '';
+  if (document.getElementById('addMask')?.classList.contains('show')) closeAdd();
+});
 
 function _goStrategyValue() {
   return (document.querySelector('input[name=addGoStrategy]:checked') || {}).value || 'manual';

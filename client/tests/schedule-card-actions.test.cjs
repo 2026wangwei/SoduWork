@@ -425,3 +425,27 @@ test('app-created cards show the app icon, name and optional character without s
  const historic=c._schAppIdentity({note:'任务\n\n即用任务上下文（数据）：\n'+JSON.stringify({appName:'旧即用'})+'\n\n执行说明'});assert.match(historic,/旧即用/);
  assert.doesNotMatch(c._schAppIdentity({sourceApp:{name:'<img onerror=evil>',icon:'javascript:evil'}}),/src="javascript|<img onerror/);
 });
+
+test('another installation on the same account may view, pause and delete a device-owned schedule', async () => {
+  const c = context();
+  c._schFindPlugin = c._schmFind = () => null;
+  vm.runInContext(cards,c);
+  const schedule = {id:'plan',title:'Report',every:'daily',atHour:9,atMinute:0,
+    enabled:true,assigneeId:'local:pi',isOriginDevice:false};
+  const fromOtherDevice = c._schCardHtml(schedule);
+  assert.match(fromOtherDevice,/在其他设备执行/);
+  for (const action of ['runs','toggle','del']) assert.ok(fromOtherDevice.includes('data-act="'+action+'"'));
+  for (const action of ['edit','run']) assert.ok(!fromOtherDevice.includes('data-act="'+action+'"'));
+  schedule.enabled=false;
+  assert.doesNotMatch(c._schCardHtml(schedule), /data-act="toggle"/);
+  c.schedule=schedule;
+  vm.runInContext('_schRows=[schedule]',c);
+  const calls=[];
+  c._schPrepareEditor=()=>calls.push('edit');
+  c.SoduWorkAPI={runSchedule:()=>calls.push('run'),updateSchedule:()=>calls.push('toggle')};
+  for (const action of ['run','edit','toggle']) await c._schAct(action,'plan',{});
+  assert.deepEqual(calls,[]);
+  schedule.isOriginDevice = true;
+  const onOwnerDevice = c._schCardHtml(schedule);
+  for (const action of ['edit','run','toggle']) assert.ok(onOwnerDevice.includes('data-act="'+action+'"'));
+});

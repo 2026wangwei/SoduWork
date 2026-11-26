@@ -222,10 +222,10 @@ Codex ACP 协商带版本的 `sessionFailure` 能力，在接受 `end_turn` 前�
 
 ## 连数据库
 
-在后端目录执行 `alembic upgrade head`。唯一的 Alembic head 为
-`0094_merge_proxy_peer_identity`，合并了 `0093_proxy_usage_shadow` 和
-`0093_device_peer_identity`。数据库从其中任一版本升级时，Alembic 会先执行另一个版本，
-再完成合并，保留已有的代理用量观测记录和已登记的设备公钥。
+在后端目录执行 `alembic upgrade head`。`0095_schedule_device_scope` 接在
+`0094_merge_proxy_peer_identity` 之后，为新建或明确更换执行目标的个人自动化记录设备范围。
+旧计划沿用保存时的目标。同账号的其他设备可以查看、暂停或删除计划。编辑、启用或立即执行
+需回到原设备。首次保存使用新设备范围的计划之前可降级。
 
 领域排序接受 32 位有符号整数及旧客户端使用的十进制整数字符串。非法值、
 布尔值、小数和越界值会在修改记录前返回 HTTP 400。PATCH 省略排序或传入 null

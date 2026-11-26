@@ -11,9 +11,23 @@ from sqlalchemy import select
 from app import db, models
 from app.automation_models import RunnerNode
 from app.services.cluster_bus import bus
+from app.services import conversation_handoffs as handoffs
 
 
 class TargetDiagnosticsTests(HandoffFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_device_execution_excludes_sibling_desktops_while_explicit_handoffs_can_find_them(self):
+        current = self.live("first", client_id=self.client_id)
+        sibling = self.live("second", client_id=self.other_id)
+        async with db.SessionLocal() as session:
+            session.add_all([RunnerNode(id=node.id, client_id=node.client_id, org_id=self.org)
+                             for node in (current, sibling)])
+            await session.commit()
+            for caller_id, own, other in [(self.client_id, current, sibling), (self.other_id, sibling, current)]:
+                client = await session.get(models.Client, caller_id)
+                self.assertEqual(await handoffs.device_execution_runner_ids(session, client), {own.id})
+                self.assertEqual(await handoffs.targets(session, client, device_bound=True), [])
+                self.assertEqual([target["runnerId"] for target in await handoffs.targets(session, client)], [other.id])
+
     async def test_current_device_offline_scope_and_get_is_read_only(self):
         local = self.live("current", client_id=self.client_id)
         self.live("private-colleague", client_id=self.colleague_id)

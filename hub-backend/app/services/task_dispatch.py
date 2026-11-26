@@ -165,13 +165,6 @@ async def dispatch(tid, body, client, session, *, actor=None):
     if active_dispatch is not None:
         active_dispatch["task"] = await svc.task_to_api_live(session, t)
         return active_dispatch
-    if explicit_direct:
-        from ..services.execution_context import public as public_execution_context
-        routing = dict(t.work_routing or {})
-        routing["selectedStrategy"] = "direct"
-        routing["workflowBindingId"] = ""
-        routing["executionContext"] = public_execution_context(body.get("executionContext"))
-        t.work_routing = routing
     attempt_id = await dispatch_attempts.start(
         session, tid, who, aid, atype, str(body.get("model") or ""),
         stable_id=conversation_handoffs.dispatch_id(handoff) if handoff else "")
@@ -282,6 +275,14 @@ async def dispatch(tid, body, client, session, *, actor=None):
             "当前电脑没有可接这条需求的在线 Agent，请检查底座安装、Runner 状态和能力授权",
             409,
         )
+    if explicit_direct:
+        # Keep rejected or stale Runner selections out of the persisted task detail.
+        from ..services.execution_context import public as public_execution_context
+        routing = dict(t.work_routing or {})
+        routing["selectedStrategy"] = "direct"
+        routing["workflowBindingId"] = ""
+        routing["executionContext"] = public_execution_context(body.get("executionContext"))
+        t.work_routing = routing
     try:
         from ..services import task_execution_model
         ctx, agent_execution = await task_execution_model.prepare(

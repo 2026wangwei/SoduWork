@@ -24,7 +24,7 @@
   let state = {
     surface: null, layer: null, seed: {}, proposal: null,
     agents: [], repos: [], methods: [], modelOptions: [], defaultModel: '', agentReason: '',
-    seq: 0, saved: false, saving: false, createdId: '',
+    seq: 0, saved: false, saving: false, createdId: '', restoredOrigin: undefined,
   };
   let identityEpoch = 0;
   let refineTail = Promise.resolve();
@@ -53,6 +53,8 @@
     state.proposal = snapshot.proposal; state.saved = snapshot.phase === 'succeeded';
     state.saving = snapshot.phase === 'submitting'; state.createdId = snapshot.createdId || '';
     if (snapshot.phase === 'cancelled') { body.textContent = tx('已取消创建自动化'); return; }
+    if (snapshot.editBase?.receipt && !snapshot.uncertain && !state.saving &&
+        (state.restoredOrigin === false || state.restoredOrigin === null)) state.saved = true;
     if (state.saved) return renderSaved(snapshot.receipt || snapshot.proposal);
     if (snapshot.phase === 'loading') { showLoading(body, '正在整理自动化，请稍候…'); return; }
     if (!snapshot.proposal) {
@@ -206,6 +208,7 @@
     const s = { ...seed, requestedAt: seed?.requestedAt ?? Date.now() };
     const seq = ++state.seq;
     state.seed = s;
+    state.restoredOrigin = s.cardState?.createdId ? null : undefined;
     state.saved = false;
     state.proposal = null;
     const record = cards().open(s); state.card = record;
@@ -222,8 +225,16 @@
     const execution = loadExecutionOptions(s);
     const methods = typeof _schmLoad === 'function'
       ? Promise.resolve(_schmLoad()).catch(() => []) : Promise.resolve([]);
+    // Receipts can be restored on a different desktop. Use this request's origin
+    // verdict before showing an editor for an already-created schedule.
+    const id = record.snapshot.createdId;
+    const origin = id && global.SoduWorkAPI?.listSchedules
+      ? SoduWorkAPI.listSchedules().then(rows => {
+        const item = rows.find(row => row.id === id);
+        return item ? item.isOriginDevice !== false : null;
+      }).catch(() => null) : undefined;
     let got;
-    try { got = await Promise.all([execution, methods]); }
+    try { got = await Promise.all([execution, methods, origin]); }
     catch (error) {
       if (ticket) cards().finish(ticket, {phase:'error', error:errorText(error)});
       ready = true; if (visible()) paintCard(); return false;
@@ -234,7 +245,7 @@
       modelOptions: got[0]?.modelOptions || [], defaultModel: got[0]?.defaultModel || '',
       hubDefaultModel: got[0]?.hubDefaultModel, defaultModels: got[0]?.defaultModels || {},
       defaultModelErrors: got[0]?.defaultModelErrors || {}, modelCatalogError: got[0]?.modelCatalogError === true };
-    if (visible()) Object.assign(state, context, { agentReason: got[0]?.reason || '' });
+    if (visible()) Object.assign(state, context, { agentReason: got[0]?.reason || '', restoredOrigin: got[2] });
     ready = true;
     // Restoration refreshes candidates only; preserve the original date and manual settings without invoking the model again.
     if (s.cardState) { if (visible()) paintCard(); return visible(); }
@@ -263,7 +274,7 @@
     }
     const items = state.agents.slice();
     if (selected && !items.some(item => String(item.id) === selected)) {
-      items.unshift({ id: selected, name: _tx('已保存的执行底座'), available: false });
+      items.unshift({ id: selected, name: _tx('已保存的执行底座'), available: false, disabled: true });
     }
     if (!items.length) return '<option value="">' + esc(_tx('当前设备没有可选执行底座')) + '</option>';
     return items.map(item => global.WorkAutomationView.agentOptionHtml(item, selected)).join('');
@@ -732,7 +743,7 @@
     setProbe('checking', '正在检查执行条件…', 'Agent、Runner、权限和插件版本');
     probeTimer = setTimeout(async () => {
       try {
-        const result = await SoduWorkAPI.preflightSchedule(bodyOf(value));
+        const result = await SoduWorkAPI.preflightSchedule({ ...bodyOf(value), scheduleId: state.createdId || undefined });
         if (seq !== probeSeq || !state.layer) return;
         const details = (result.checks || []).map(item => item.label).filter(Boolean).join(' · ');
         setProbe(result.state || 'waiting', result.message || '执行条件待确认', details, result.remedy);
@@ -780,6 +791,7 @@
       ? {proposal:state.card.snapshot.proposal, receipt:state.card.snapshot.receipt} : null);
     const value = pause ? {...state.proposal, enabled:false} : valueFromForm();
     const invalid = pause ? '' : validate(value);
+    if (!pause && editing && !canEditSaved(base?.receipt)) return;
     if (invalid) {
       updateCard({ phase: 'error', proposal: value, error: invalid });
       showError(invalid);
@@ -806,7 +818,7 @@
     try {
       const body = pause ? {enabled:false} : bodyOf(value);
       if (!pause && SoduWorkAPI.preflightSchedule) {
-        const preflight = await SoduWorkAPI.preflightSchedule(body, { force: true });
+        const preflight = await SoduWorkAPI.preflightSchedule({ ...body, scheduleId: state.createdId || undefined }, { force: true });
         if (!owned()) return;
         if (current() && preflight) setProbe(preflight.state || 'waiting', preflight.message || '执行条件待确认',
           (preflight.checks || []).map(item => item.label).filter(Boolean).join(' · '), preflight.remedy);
@@ -850,8 +862,13 @@
     }
   }
 
+  function canEditSaved(receipt) {
+    return state.restoredOrigin === undefined ? receipt?.isOriginDevice !== false : state.restoredOrigin === true;
+  }
+
   function renderSaved(saved) {
     const body = state.layer?.querySelector('#wazBody'), value = {...state.proposal, ...saved};
+    if (state.restoredOrigin !== undefined) value.isOriginDevice = state.restoredOrigin;
     if (body) {
       global.ForwardSelect?.destroy(body);
       body.innerHTML = global.WorkAutomationCardState.savedHtml(value,
@@ -946,13 +963,14 @@
   function acceptsFollowup(text) {
     if (!state.layer?.isConnected || state.saving || state.card?.snapshot.uncertain || state.card?.snapshot.phase === 'cancelled') return false;
     if (!state.saved) return state.card?.snapshot.chatEditing !== false;
-    return Boolean(state.createdId) && !/^(?:如果|假如|是否|不要修改|if\b|what if\b)/i.test(text.trim()) &&
+    return Boolean(state.createdId) && canEditSaved(state.card?.snapshot.receipt) && !/^(?:如果|假如|是否|不要修改|if\b|what if\b)/i.test(text.trim()) &&
       /^(?:请|please\s+)?(?:修改|调整|改为|改成|改到|补充|增加|添加|把.+改|将.+改|(?:任务内容|执行时间|时间|标题|名称).{0,8}改|(?:停用|暂停|取消)(?:这个|这条|该)?(?:自动化|任务|计划)|(?:edit|update|change|reschedule)\b)/i.test(text.trim());
   }
 
   function startEdit() {
     const snapshot = state.card && cards().capture(state.card);
-    if (!state.saved || state.saving || state.card?.pending || !snapshot?.createdId || snapshot.uncertain) return false;
+    if (!state.saved || state.saving || state.card?.pending || !snapshot?.createdId || snapshot.uncertain ||
+        !canEditSaved(snapshot.receipt)) return false;
     const editBase = {proposal:snapshot.proposal, receipt:snapshot.receipt};
     state.proposal = {...snapshot.proposal}; state.saved = false;
     updateCard({phase:'draft', proposal:state.proposal, editBase, chatEditing:true, error:''});

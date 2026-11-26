@@ -327,3 +327,24 @@ test('standalone task dispatch distinguishes transfers from local collaboration'
   assert.match(add, /_openCreatedTaskInChat\(assigned\.task\.id, assigned\.task\.title \|\| title, \{ \.\.\.assigned\.task, readOnly: true \}\)/);
   assert.match(add, /_goDispatch\(newId, title, go\)\.then\(\(result\) => \{[\s\S]{0,520}_openCreatedTaskInChat\(newId, title\)/);
 });
+
+test('last direct requirement choices are isolated between two installations of the same account', () => {
+  const values = new Map([['soduwork_work_lastgo_v2', '{"agentId":"runner:legacy:pi"}']]);
+  let scope = 'hub@device-1@account', changed;
+  const window = { SoduWorkAPI: {taskStorageKey: () => scope},
+    addEventListener: (name, fn) => { if (name === 'soduwork-data-scope-changed') changed = fn; } };
+  const ctx = vm.createContext({window, clearTimeout, document:{getElementById:()=>null},
+    localStorage:{getItem:key=>values.get(key),setItem:(key,value)=>values.set(key,value)}});
+  vm.runInContext(read('components','panels','panels-add.js'),ctx);
+  assert.equal(ctx._goLast().agentId, undefined);
+  ctx._goRemember({agentId:'runner:first:pi'});
+  assert.equal(ctx._goLast().agentId, 'runner:first:pi');
+  vm.runInContext('_addGoOptions = {substrates:[{key:"runner:first:pi"}]}; _addGoQueryKey = "first"', ctx);
+  scope = 'hub@device-2@account'; changed();
+  assert.equal(ctx._goLast().agentId, undefined);
+  assert.equal(vm.runInContext('_addGoOptions',ctx), null);
+  assert.equal(vm.runInContext('_addGoQueryKey',ctx), '');
+  ctx._goRemember({agentId:'runner:second:pi'});
+  scope = 'hub@device-1@account'; changed();
+  assert.equal(ctx._goLast().agentId, 'runner:first:pi');
+});

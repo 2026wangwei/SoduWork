@@ -152,7 +152,7 @@ test('refreshing executor options preserves an existing choice and updates only 
   const hint = {};
   ctx.document.getElementById = id => ({ schWho: select, schWhoHint: hint })[id] || null;
   run(ctx, '_schRefreshAgentField()');
-  assert.match(select.innerHTML, /value="old-seat" selected/);
+  assert.match(select.innerHTML, /value="old-seat" selected disabled/);
   assert.match(select.innerHTML, /local:pi/);
   assert.equal(select.disabled, false);
   assert.equal(changes, 1);

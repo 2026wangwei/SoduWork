@@ -133,7 +133,7 @@ async def _resume(session, client, row, digest):
     return await handoffs.commit(session, client, row.transfer_id, row.sha256)
 
 
-async def create(session, client, request_id, raw, uploads):
+async def create(session, client, request_id, raw, uploads, *, device_bound=False):
     user = await handoffs.owner(session, client)
     row_id = handoffs.identity(client.id, request_id)
     requested = clean_options(raw, has_files=bool(uploads))
@@ -156,7 +156,9 @@ async def create(session, client, request_id, raw, uploads):
     code = cloud_code_delivery.context(requested["text"], str(uuid.uuid5(handoffs._NS, row_id + ":task")))
     if code:
         source.update(deliveryMode="git", codeDelivery=code["codeDelivery"])
-    roster = await handoffs.targets(session, client)
+    if device_bound:
+        source["deviceBoundRunner"] = True
+    roster = await handoffs.targets(session, client, device_bound=device_bound)
     if requested["targetRunnerId"]:
         available = [item for item in roster
                      if item.get("runnerId") == requested["targetRunnerId"]

@@ -534,3 +534,22 @@ test('创建前等待提交意图写入会话，写入失败不调用服务端�
   await f.probe.save(); assert.equal(attempts, 2); assert.equal(f.calls.create, 1);
   assert.equal(f.sheet.capture().phase, 'succeeded');
 });
+
+test('restoring a receipt on another device rechecks origin before offering configuration', async () => {
+  const f = fixture();
+  const receipt = {...proposal, id:'saved', isOriginDevice:true};
+  const pending = deferred();
+  f.api.listSchedules = () => pending.promise;
+  const opening = f.sheet.open({cardId:'saved-card',cardState:restored({phase:'succeeded', createdId:'saved', receipt})});
+  await tick();
+  assert.doesNotMatch(f.probe.state.layer.body.innerHTML, /data-waz-edit/);
+  pending.resolve([{...receipt,isOriginDevice:false}]);
+  await opening;
+  const html = f.probe.state.layer.body.innerHTML;
+  assert.match(html,/在其他设备执行/);
+  assert.match(html,/data-waz-pause/);
+  assert.match(html,/data-waz-open/);
+  assert.doesNotMatch(html,/data-waz-edit|可继续发送/);
+  assert.equal(f.sheet.startEdit(), false);
+  assert.equal(f.sheet.acceptsFollowup('修改自动化'), false);
+});

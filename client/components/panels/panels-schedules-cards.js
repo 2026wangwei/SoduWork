@@ -68,6 +68,7 @@ function _schAppIdentity(s) {
 }
 function _schCardHtml(s) {
   const fired = s.every === 'once' && s.onceFired;
+  const otherDevice = s.isOriginDevice === false;
   const who = _schCardAssignee(s.assigneeId);
   const plugin = s.pluginBindingId ? _schFindPlugin(s.pluginBindingId) : _schmFind(s.personalPluginKey);
   const method = s.pluginBindingId ? (plugin && plugin.name) || '企业插件'
@@ -86,7 +87,7 @@ function _schCardHtml(s) {
   const methodLabel = method && !appIdentity
     ? '<span class="sch-i-method" data-user-content title="' + esc(method) + '">' + esc(method) + '</span>' : '';
   const stateLabel = fired ? '本次预约已触发' : s.enabled ? '已启用' : '已停用';
-  const stateHtml = fired
+  const stateHtml = fired || otherDevice && !s.enabled
     ? '<span class="sch-i-state">' + stateLabel + '</span>'
     : '<button type="button" class="sch-i-state' + (s.enabled ? ' is-enabled' : '') +
       '" data-act="toggle" aria-pressed="' + String(Boolean(s.enabled)) + '" aria-label="' +
@@ -96,7 +97,7 @@ function _schCardHtml(s) {
     '<div class="sch-i-body"><div class="sch-i-head"><div class="sch-i-when">' + _schVisualIcon('clock') +
       '<b>' + esc(rh[0]) + '</b><i>' + esc(rh.slice(1).join(' ')) + '</i></div>' +
       '<div class="sch-i-assignment">' + appIdentity + executor + methodLabel + '</div>' +
-      stateHtml + '</div>' +
+      (otherDevice ? '<span class="sch-i-meta">在其他设备执行</span>' : '') + stateHtml + '</div>' +
     '<div class="sch-i-main"><div class="sch-i-top"><b class="sch-i-title" data-user-content title="' + esc(s.title) + '">' +
       esc(s.title) + '</b></div>' + _schCardNote(s.note) +
       (s.sourceRequirement?.id ? '<div class="sch-i-meta"><span>' + esc(typeof SoduWorkI18n !== 'undefined' ?
@@ -110,13 +111,13 @@ function _schCardHtml(s) {
       esc(_schCardNext(s)) + '</span>' +
       (s.lastRunAt ? '<span class="sch-i-last">上次 ' + esc(_schLocal(s.lastRunAt)) + esc(retry) + '</span>' : '') +
     '</span><span class="sch-i-ops" role="group" aria-label="自动化操作">' +
-      _schActionButton('run', '立刻跑一次') + _schActionButton('runs', '执行记录') +
-      _schActionButton('edit', '编辑自动化') + _schActionButton('del', '删除自动化') + '</span></div></article>';
+      (otherDevice ? '' : _schActionButton('run', '立刻跑一次')) + _schActionButton('runs', '执行记录') +
+      (otherDevice ? '' : _schActionButton('edit', '编辑自动化')) + _schActionButton('del', '删除自动化') + '</span></div></article>';
 }
 
 async function _schToggleEnabled(sid, source) {
   const schedule = (_schRows || []).find(item => item.id === sid);
-  if (!schedule || !window.SoduWorkAPI?.updateSchedule) return;
+  if (!schedule || !window.SoduWorkAPI?.updateSchedule || !schedule.enabled && schedule.isOriginDevice === false) return;
   const enabled = !Boolean(schedule.enabled);
   const action = enabled ? '\u542f\u7528' : '\u505c\u7528';
   const title = enabled ? '\u542f\u7528\u81ea\u52a8\u5316' : '\u6682\u505c\u81ea\u52a8\u5316';

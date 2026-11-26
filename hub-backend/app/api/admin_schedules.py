@@ -143,7 +143,11 @@ async def update_ai_schedule(sid: str, body: dict = Body(default_factory=dict),
     blocker = await owner_change_blocker(session, s, body)
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
+    old_target = s.owner_client_id, s.assignee_id
     _sch_apply(s, body)
+    if old_target != (s.owner_client_id, s.assignee_id):
+        # Explicit administrative delegation follows the organization's execution scope.
+        s.device_bound_runner = False
     try:
         from ..services import schedules as sch
         await sch.validate_execution(
