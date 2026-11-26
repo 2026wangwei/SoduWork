@@ -150,7 +150,7 @@ async def _submission(row_id):
             await session.commit()
             if not changed.rowcount:
                 return "stale"
-        result = await handoffs.commit(session, client, row.transfer_id, row.sha256)
+        result = await handoffs.commit(session, client, row.transfer_id, row.sha256, accepted_only=True)
         return "dispatched" if result.get("phase") == "committed" else "pending"
 
 
@@ -172,12 +172,15 @@ async def recover_submissions(limit=BATCH_SIZE):
             raise
         except Exception as exc:
             state = "errors"
-            log.warning("Cloud submission recovery %s: %s", row_id, type(exc).__name__)
             async with SessionLocal() as session:
                 row = await session.get(Handoff, row_id)
-                if row is not None and row.phase in {"prepared", "committing"}:
-                    row.error = "云端受理请求正在等待恢复：" + type(exc).__name__
-                    await session.commit()
+                if row is not None and row.phase == "prepared" and not row.submitted_at:
+                    state = "awaitingConfirmation"
+                else:
+                    log.warning("Cloud submission recovery %s: %s", row_id, type(exc).__name__)
+                    if row is not None and row.submitted_at and row.phase in {"prepared", "committing"}:
+                        row.error = "云端受理请求正在等待恢复：" + type(exc).__name__
+                        await session.commit()
         counts[state] = counts.get(state, 0) + 1
     await asyncio.gather(*(recover_one(row_id) for row_id in ids))
     return counts

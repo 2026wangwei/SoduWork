@@ -533,6 +533,8 @@
     "正在整理派活原文…": "Preparing assignment text…",
     "将发送给 Agent 的完整内容": "Complete content to send to the agent",
     "派活原文暂时无法预览": "Assignment preview unavailable",
+    "当前 Hub 版本不支持附件清单校验，请升级 Hub 后重新预览。继续派发将使用上次已确认的清单。": "This Hub version cannot verify attachment manifests. Upgrade the Hub to preview again. Dispatch will use the last confirmed manifest.",
+    "当前 Hub 版本不支持附件清单校验，请升级 Hub 后重新预览。也可以直接派发当前需求。": "This Hub version cannot verify attachment manifests. Upgrade the Hub to preview again. You can also dispatch this issue directly.",
     "忙碌": "Busy",
     "暂无可接收任务的同事": "No teammates available to receive issues",
     "暂无可显示的同事": "No teammates to display",

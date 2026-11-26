@@ -246,7 +246,7 @@ async def create(session, client, request_id, raw, uploads, *, device_bound=Fals
                        if key.split("/")[-2] not in protected]
         await _cleanup(objects)
         raise
-    return await handoffs.commit(session, client, request_id, "")
+    return await handoffs.commit(session, client, request_id, "", accepted_only=True)
 
 
 async def dispatch_inputs(session, row, extra):

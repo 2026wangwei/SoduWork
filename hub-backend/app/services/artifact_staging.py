@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +27,26 @@ def _lock(handle):
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def manifest_directory():
+    configured = storage.get_settings().artifact_staging_dir
+    path = configured or os.path.join(storage._LOCAL_DIR, ".ingest")
+    return Path(storage._extended(path, directory=True))
+
+
+def validate_directory():
+    directory = manifest_directory()
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=directory) as probe:
+            _lock(probe)
+            probe.write(b"\n")
+            probe.flush()
+            os.fsync(probe.fileno())
+    except OSError as exc:
+        raise RuntimeError(f"Artifact staging requires a writable persistent directory at {directory}. "
+                           "Mount a volume there or configure ARTIFACT_STAGING_DIR.") from exc
+
+
 class ObjectList:
     def __init__(self, session, task_id):
         bind = session.get_bind().engine
@@ -33,7 +54,7 @@ class ObjectList:
         if bind.url.database in (":memory:", ""):
             database += str(id(bind))
         self.scope = hashlib.sha256((database + "\0" + task_id).encode()).hexdigest()
-        self.directory = Path(storage._extended(os.path.join(storage._LOCAL_DIR, ".ingest"), directory=True))
+        self.directory = manifest_directory()
         self.handle = None
 
     def store(self, write, key, *args):

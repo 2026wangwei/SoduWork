@@ -5,7 +5,7 @@ import json
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from ..models import Task, TaskEvent
+from ..models import Milestone, Task, TaskEvent
 from . import ai_exec, dispatch_attempts, execution_sessions, task_access, task_events, task_status
 from .requirement_edit_policy import STARTED_EVENT
 
@@ -90,9 +90,43 @@ async def reserve(session, batch, ids, key, who, aid, atype, model, picked):
                                          stable_id=attempt_id, recovery_route=picked or {})
 
 
+async def release_unstarted(session, batch, attempt_id):
+    """Release only member transitions still owned by this batch admission."""
+    if batch.id != attempt_id:
+        return False
+    members = list(await session.scalars(select(TaskEvent.task_id).where(
+        TaskEvent.kind == "ai.batch_requested",
+        TaskEvent.detail["attemptId"].as_string() == attempt_id,
+        TaskEvent.task_id.in_(select(Milestone.src_task_id).where(Milestone.task_id == batch.id)),
+    ).order_by(TaskEvent.task_id)))
+    for tid in members:
+        await task_access.reserve_task_write(session, tid, batch.owner_client_id)
+        task = await session.get(Task, tid, with_for_update=True, populate_existing=True)
+        if (not task or task.owner_client_id != batch.owner_client_id or task.status != "doing"
+                or task.archived_at):
+            continue
+        # Historical admissions wrote ai.batched immediately before the
+        # todo -> doing transition. A later transition or admission supersedes it.
+        relevant = ("ai.batched", "ai.batch_requested", STARTED_EVENT, *ai_exec.KINDS_DISPATCH_STATE)
+        events = list(await session.scalars(select(TaskEvent).where(
+            TaskEvent.task_id == tid, TaskEvent.kind.in_(relevant)
+        ).order_by(TaskEvent.at.desc(), TaskEvent.id.desc()).limit(2)))
+        if (len(events) == 2 and events[0].kind == STARTED_EVENT
+                and events[0].detail == {"from": "todo", "to": "doing"}
+                and events[1].kind == "ai.batched" and events[1].detail.get("batchId") == batch.id):
+            await task_status.mark(session, task, "todo", why="合并批次确认未启动")
+    return bool(members)
+
+
 async def settle(session, batch, count, who, aid, picked, result):
     """Record the transport outcome under the batch row lock; return whether confirmation is pending."""
     attempt_id = batch.id
+    if batch.status == "cancel":
+        rejected = await session.scalar(select(TaskEvent.id).where(
+            TaskEvent.task_id == batch.id, TaskEvent.kind == ai_exec.EV_DISPATCH_FAILED,
+            TaskEvent.detail["confirmedNotStarted"].as_boolean().is_(True)).limit(1))
+        if rejected:
+            raise HTTPException(409, "执行机已确认本批次未启动，请重新派发")
     previous = await ai_exec.last_dispatch_event(session, batch.id)
     if previous is not None:
         # A heartbeat or reconciliation probe already confirmed this delivery.
