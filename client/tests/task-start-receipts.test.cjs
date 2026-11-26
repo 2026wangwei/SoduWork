@@ -18,6 +18,95 @@ function fixture(t, send) {
 }
 const scope = {conversationId: 'chat', turnId: 'turn'};
 
+function markdown(outcome, content) {
+  return {outcome, files: [{name:'冬天.md', category:'primary', contentType:'text/markdown',
+    data:Buffer.from(content).toString('base64')}]};
+}
+
+// Exercise the production multipart uploader and JSON turn transport together.
+async function receiveReceipts(t, handle) {
+  const server = require('node:http').createServer(async (incoming, response) => {
+    const request = new Request('http://localhost' + incoming.url, {method:'POST', headers:incoming.headers,
+      body:incoming, duplex:'half'});
+    let message;
+    if (incoming.url === '/api/v1/tasks/issue/conversation-delivery') {
+      const form = await request.formData();
+      message = ['deliver', form.get('outcome'), form.get('paths'), await form.get('files').text()];
+    } else if (incoming.url === '/api/v1/tasks/issue/conversation-turn') {
+      const body = await request.json();
+      message = [body.action, body.deliveryIssue?.code || body.submissionMode || ''];
+    } else {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead((await handle(message)) || 200, {'content-type':'application/json'}).end('{}');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const current = identity('owner', 'http://127.0.0.1:' + server.address().port);
+  const f = fixture(t, require('../main/pi-session/task-input').request);
+  f.switch(current);
+  return {...f, receipt:f.service.forTask(current, 'issue')};
+}
+
+test('offline resumed delivery replays evidence and final bytes in order across restart', async t => {
+  let online = false;
+  const delivered = [];
+  const f = await receiveReceipts(t, message => {
+    if (!online && message[0] !== 'started') return 503;
+    delivered.push(message);
+  });
+  await f.receipt(scope);
+  await f.receipt.finish(scope, {action:'wait'}, {delivery:markdown('incomplete', 'draft')});
+  await f.receipt.finish(scope, {action:'wait', deliveryIssue:{code:'capture_pending', reason:'Collecting'}});
+  const final = markdown('completed', 'final');
+  assert.equal((await f.receipt.finish(scope, {action:'complete', submissionMode:'auto'}, {delivery:final})).pending, true);
+  final.files[0].data = Buffer.from('later edit').toString('base64');
+  assert.deepEqual(delivered, [['started', '']]);
+  f.service.dispose();
+  online = true;
+  const restarted = create(f.options);
+  t.after(() => restarted.dispose());
+  await restarted.flush();
+  assert.deepEqual(delivered, [['started', ''], ['deliver','incomplete','冬天.md','draft'],
+    ['wait','capture_pending'], ['deliver','completed','冬天.md','final'], ['complete','auto']]);
+  assert.equal(f.files().length, 0);
+});
+
+test('acknowledging an in-flight evidence upload preserves the resumed manual delivery', async t => {
+  const arrived = Promise.withResolvers(), release = Promise.withResolvers();
+  const delivered = [];
+  const f = await receiveReceipts(t, async message => {
+    delivered.push(message);
+    if (message[1] === 'incomplete') { arrived.resolve(); await release.promise; }
+  });
+  const first = f.receipt.finish(scope, {action:'wait'}, {delivery:markdown('incomplete', 'draft')});
+  await arrived.promise;
+  const final = f.receipt.finish(scope, {action:'complete', submissionMode:'manual'},
+    {delivery:markdown('completed', 'final')});
+  release.resolve();
+  assert.deepEqual(await Promise.all([first, final]), [{pending:false},{pending:false}]);
+  assert.deepEqual(delivered, [['deliver','incomplete','冬天.md','draft'], ['wait',''],
+    ['deliver','completed','冬天.md','final'], ['complete','manual']]);
+  assert.equal(f.files().length, 0);
+});
+
+for (const action of ['fail', 'cancel']) {
+  test(`queued ${action} stays terminal when a late completion offers new files`, async t => {
+    let online = false;
+    const delivered = [];
+    const f = await receiveReceipts(t, message => {
+      if (!online) return 503;
+      delivered.push(message);
+    });
+    await f.receipt.finish(scope, {action}, {delivery:markdown('incomplete', 'evidence')});
+    online = true;
+    await f.receipt.finish(scope, {action:'complete'}, {delivery:markdown('completed', 'late')});
+    assert.deepEqual(delivered, [['deliver','incomplete','冬天.md','evidence'], [action,'']]);
+    assert.equal(f.files().length, 0);
+  });
+}
+
 test('capture failure survives offline restart as a failed attempt with its repair issue', async t => {
   let online=false; const sent=[];
   const f=fixture(t,async(_id,_route,body)=>{if(!online)throw Error('offline');sent.push(body);});
