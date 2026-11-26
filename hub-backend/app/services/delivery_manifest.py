@@ -36,6 +36,10 @@ _SUPPORT_EXTS = {
 _EVIDENCE_WORDS = re.compile(
     r"(^|[/_.-])(screen(?:shot)?s?|shots|preview|evidence|proof|qa|verify|verification|test[-_ ]?report|"
     r"截图|预览|证据|验收|测试报告)([/_.-]|$)", re.I)
+# The desktop capture tool owns this directory. Older clients sometimes marked
+# its images "primary" when serializing every visible artifact in a turn.
+_RASTER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_CAPTURE_PATH = re.compile(r"(?:^|/)\.soduwork/evidence/[^/.][^/]*\.(?:png|jpe?g|gif|webp)$", re.I)
 _BUNDLE_WORDS = re.compile(r"(^|[/_.-])(完整产出|交付包|deliverable|artifact|bundle)([/_.-]|$)", re.I)
 _ZIP_MAX_ENTRIES = 10_000
 _ZIP_MAX_FILE = 512 * 1024 * 1024
@@ -51,14 +55,19 @@ def normalize_name(value: object) -> str:
     return "/".join(parts)[:300]
 
 
+def is_capture_path(name: object) -> bool:
+    return bool(_CAPTURE_PATH.search(normalize_name(name)))
+
+
 def classify_name(name: object, *, role: str = "output", meta: dict | None = None) -> str:
     """Return primary, supporting, evidence, or internal, giving explicit roles precedence."""
     path = normalize_name(name)
     role = str(role or "").lower()
     meta = dict(meta or {})
     kind = str(meta.get("kind") or meta.get("type") or "").lower()
-    if role == "verification" or kind in {
-            "screenshot", "preview", "proof", "evidence", "test", "qa", "code_review"}:
+    if is_capture_path(path) or role in {"verification", "evidence"} or kind in {
+            "screenshot", "deploy_screenshot", "screen_shot", "screen_capture", "preview",
+            "proof", "evidence", "test", "qa", "code_review"}:
         return "evidence"
     explicit = str(meta.get("category") or "").strip().lower()
     if explicit in _CATEGORIES:
@@ -77,6 +86,8 @@ def classify_name(name: object, *, role: str = "output", meta: dict | None = Non
     if ext in _INTERNAL_EXTS or base.endswith(("~", ".bak")):
         return "internal"
     if _EVIDENCE_WORDS.search(path):
+        return "evidence"
+    if len(parts) == 1 and ext in _RASTER_EXTS and base[:-len(ext)].endswith("效果截图"):
         return "evidence"
     if _BUNDLE_WORDS.search(path) or base in {"index.html", "index.htm", "readme.md"}:
         return "primary"

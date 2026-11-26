@@ -105,11 +105,17 @@ def _bundle_artifact(run: dict, entries: list[tuple[str, float]], *,
     """Bundle more than two final outputs, retaining loose files for preview."""
     from . import declared_outputs, delivery_manifest
     declared = {rel.replace("\\", "/") for rel, _stamp in declared_outputs.changed_entries(run)}
-    entries = [(rel, stamp) for rel, stamp in entries
-               if rel.replace("\\", "/") in declared or delivery_manifest.classify_name(rel) != "evidence"]
-    final_count = sum(rel.replace("\\", "/") in declared or
-                      delivery_manifest.classify_name(rel) == "primary"
-                      for rel, _stamp in entries)
+    included = []
+    final_count = 0
+    for rel, mtime in entries:
+        meta = {"category": "primary"} if rel.replace("\\", "/") in declared else {}
+        category = delivery_manifest.classify_name(rel, meta=meta)
+        if category == "evidence":
+            continue
+        included.append((rel, mtime))
+        if category == "primary":
+            final_count += 1
+    entries = included
     # Dependency files remain in a needed archive but do not inflate output count.
     # Keep the overflow transport archive so large sites never lose dependencies.
     if final_count <= 2 and len(entries) <= _ART_CAP:

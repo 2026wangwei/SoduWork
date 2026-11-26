@@ -104,8 +104,9 @@ function historyLinks(row, history) {
 function prompt(workspace) {
   const relative = '.soduwork-drafts/' + workspace.key + '/';
   return 'The selected project remains your working directory. For a request to edit the existing project, read and edit its actual files in place. ' +
-    'For any new standalone deliverable (including reports, screenshots, websites and installable packages), use this conversation’s private delivery directory: ' +
-    relative + '. Create it when producing files. Keep deliverable dependencies, previews, package manifests and evidence inside it. ' +
+    'For any new standalone deliverable (including reports, websites and installable packages), use this conversation’s private delivery directory: ' +
+    relative + '. Keep the files needed to use each deliverable together. Save screenshots taken to show or verify the result in ' +
+    relative + '.soduwork/evidence/ and link to them in the reply for preview. Only put a screenshot among the deliverables when the user asks for the image file itself. ' +
     'If the user explicitly requests a particular destination, honor it and stage a copy of the final deliverable here. ' +
     'In the final answer use Markdown links with only the filename as the visible label and the file path relative to the delivery directory as the target, e.g. [report.txt](docs/report.txt). Do not use another conversation’s staged files or overwrite published copies.';
 }

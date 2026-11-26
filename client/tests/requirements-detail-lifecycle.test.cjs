@@ -626,6 +626,22 @@ test('material groups preserve filenames and supporting files do not trigger aut
   assert.match(html, /交付物 · 3 份/);
 });
 
+test('a late preview screenshot stays with evidence and cannot displace the delivered files', async () => {
+  const f = fixture({listAttachments: async () => [
+    {id: 'site', filename: 'index.html', role: 'output', sourceRef: 'delivery', evidenceMeta: {round: 1}},
+    {id: 'requested', filename: 'poster.png', role: 'output', sourceRef: 'delivery', evidenceMeta: {round: 1, category: 'primary'}},
+    {id: 'same-batch', filename: 'frame.png', role: 'output', sourceRef: 'delivery', evidenceMeta: {round: 2, kind: 'screen-capture'}},
+    {id: 'late', filename: 'proof.png', role: 'output', sourceRef: 'later', evidenceMeta: {round: 3, kind: 'deploy_screenshot', category: 'primary'}},
+  ]});
+  await f.api.open('screenshot-evidence');
+  const html = f.active().querySelector('#rqAttachments').innerHTML;
+  const evidence = html.match(/data-rq-material-group="evidence"[^]*?<\/details>/)?.[0];
+  const output = html.match(/data-rq-material-group="output"[^]*?<\/details>/)?.[0];
+  assert.match(evidence, /frame\.png/); assert.match(evidence, /proof\.png/);
+  assert.match(output, /index\.html/); assert.match(output, /poster\.png/);
+  assert.doesNotMatch(output, /frame\.png|proof\.png/);
+});
+
 test('history is escaped and read-only; trace opens lazily and unmounts on collapse', async () => {
   const f = fixture({getTask: async id => ({...task(id), progress: [{text: '<img onerror=alert(1)>', at: 0}]})});
   await f.api.open('a');

@@ -56,12 +56,12 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
     const deliveryWorkspace = workspaces.allocate(cwd);
     const row = { id, cwd, adapterId: 'pi', count: 0, at: 1 };
     rows.set(id, row);
-    const messages = [];
-    const handle = { ref: 'ref-' + id, sessionId: id, cwd, deliveryWorkspace, snapshot: () => ({ messages, tools: [] }),
+    const messages = [], tools = [];
+    const handle = { ref: 'ref-' + id, sessionId: id, cwd, deliveryWorkspace, snapshot: () => ({ messages, tools }),
       historyRow: () => ({ ...row, count: messages.length }) };
     const facade = bridge.attachView(handle);
     history.observe(facade, account);
-    return { handle: facade, messages, draft: workspaces.ensure(cwd, deliveryWorkspace) };
+    return { handle: facade, messages, tools, draft: workspaces.ensure(cwd, deliveryWorkspace) };
   }
   const a = chat('one'), b = chat('two');
   async function finish(c, before, turnId, text) {
@@ -78,6 +78,8 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/askAAAAASUVORK5CYII=', 'base64');
   await fs.mkdir(path.join(a.draft, '.soduwork', 'evidence'), { recursive: true });
   await fs.writeFile(path.join(a.draft, '.soduwork', 'evidence', 'result.png'), image);
+  await fs.writeFile(path.join(a.draft, 'garden.png'), image);
+  a.tools.push({ name: 'browser_screenshot', state: 'done', after: 2, args: { path: path.relative(cwd, path.join(a.draft, 'garden.png')) } });
   await finish(a, old, 'a-second', 'A2');
 
   for (const [chat, expected] of [[a, ['A1', 'A2']], [b, ['B1']]]) {
@@ -85,6 +87,7 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
     const directories = await fs.readdir(parent);
     const copies = await Promise.all(directories.map(dir => fs.readFile(path.join(parent, dir, 'report.md'), 'utf8')));
     assert.deepEqual(copies.sort(), expected);
+    for (const dir of directories) assert.deepEqual(await fs.readdir(path.join(parent, dir)), ['report.md']);
   }
   // Live capture binds on the registered facade, while preparing the package
   // consults the native handle. Both must reach the same verified turn.
@@ -149,11 +152,14 @@ test('overlapping desktop chats retain separate turn originals, exported copies 
     if (id === 'one') {
       const screenshot = entries.find(file => file.relative === '.soduwork/evidence/result.png');
       assert.ok(screenshot);
+      const capture = listed.items.find(file => file.versionId && file.relative === 'garden.png');
+      assert.equal(capture.processEvidence, true);
+      assert.deepEqual((await packages.prepare(view, [capture.artifactId])).bytes, image);
       const savedImage = await packages.prepare(view, ['version:' + screenshot.versionId]);
       assert.equal(savedImage.manifest.entryPath, 'result.png');
       assert.deepEqual(savedImage.bytes, image);
     }
-    assert.ok(entries.every(file => file.relative === 'report.md' || file.relative === '.soduwork/evidence/result.png'));
+    assert.ok(entries.every(file => file.relative === 'report.md' || ['.soduwork/evidence/result.png', 'garden.png'].includes(file.relative)));
     await view.close();
     assert.equal(bridge.get(view.ref), null);
     assert.equal((await runtime.resolveView(canvas, 'version:' + files[0].versionId)).ok, false);

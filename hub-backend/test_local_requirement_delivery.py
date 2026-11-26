@@ -1,4 +1,5 @@
 """Real HTTP/SQLite delivery and creator-owned review without private model metadata."""
+import base64
 import hashlib
 import json
 import tempfile
@@ -65,6 +66,23 @@ class LocalRequirementDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 am.ApprovalDecision.request_id == request.id)))
         foreign = await self.call("POST", "tasks/" + tid + "/review", "peer", json={})
         self.assertIn(foreign.status_code, (403, 404), foreign.text)
+
+    async def test_visible_capture_sent_as_primary_only_supplies_review_evidence(self):
+        tid = await self.create_running("auto")
+        capture = ".soduwork/evidence/result.png"
+        requested = "design-screenshot.png"
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+        result = await self.call("POST", f"tasks/{tid}/conversation-delivery",
+            data={"conversationId": "chat", "turnId": "turn", "paths": [capture, requested],
+                  "categories": ["primary", "primary"], "outcome": "completed"},
+            files=[("files", ("result.png", png, "image/png")), ("files", (requested, png, "image/png"))])
+        self.assertEqual(result.status_code, 200, result.text)
+        async with self.sessions() as session:
+            artifact = await session.scalar(select(am.ArtifactVersion).where(am.ArtifactVersion.task_id == tid))
+            self.assertEqual([item["name"] for item in artifact.manifest["files"]], [requested])
+            self.assertEqual([item["name"] for item in artifact.manifest["evidence"]], [capture])
+            review = await session.scalar(select(am.ApprovalRequest).where(am.ApprovalRequest.task_id == tid))
+            self.assertEqual(review.artifact_version_id, artifact.id)
 
     async def test_single_account_auto_delivery_is_identical_for_private_and_managed_models(self):
         for model in ("", "managed-model"):

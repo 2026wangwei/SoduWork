@@ -101,6 +101,8 @@ Conversation project synchronization shares only verified cloud members and thei
 
 When a saved reply contains a screenshot gallery, the desktop matches each relative path against the conversation’s file index. A missing or ambiguous match displays an unavailable preview. Verified primary outputs appear with the relevant reply or under **Chat output** when the index identifies only the conversation.
 
+Screenshots of the result can be previewed in the reply. To receive an image file as a deliverable, request it explicitly. After closing a single-file preview or saving the file to the library, click its original card title or icon to reopen that turn’s version.
+
 Work-form conversations show their saved runtime selection in the sidebar before execution, labelled “Selected runtime”. Selection changes and reopening preserve this icon independently of actual execution provenance. Legacy drafts without a saved selection do not infer it from their archive format. Run `node e2e/workspace-runtime-label.cjs /absolute/evidence/directory` to check draft updates, history restoration and narrow sidebar layouts in isolated Electron.
 
 Remote notice history and receipt markers use account-scoped IndexedDB transactions and Web Locks when both browser capabilities are available. Local reminders remain in the existing localStorage cache. Migration retires a legacy snapshot only after a successful durable commit, and a failed write preserves that snapshot for retry. Environments without these capabilities keep the existing cache behavior.

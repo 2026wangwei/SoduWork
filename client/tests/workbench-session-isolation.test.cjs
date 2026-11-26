@@ -234,3 +234,35 @@ test('an unresolved restored Markdown link cannot open a same-named file from th
   assert.equal(f.wb.state().open, false);
   assert.equal(f.wb.openLink('https://example.test/', { source }), true);
 });
+
+test('a manually closed live delivery card reopens the frozen file from its own turn', async () => {
+  const f = fixture();
+  const file = { artifactId: 'web', kind: 'website', name: 'index.html', relative: 'index.html', primary: true };
+  const version = turnId => ({ ...file, artifactId: 'version:' + turnId, versionId: turnId,
+    originalArtifactId: file.artifactId, turnId, archivedReadOnly: true });
+  const source = { closest: selector => selector === '[data-output-task]'
+    ? { dataset: { outputTask: '', deliveryTurn: 'second' } } : selector === '[data-delivery]' ? {} : null };
+  const snapshot = { messages: [] };
+  f.wb.render(f.current.root, snapshot, [file]);
+  assert.equal(f.wb.openOutput('web', { source }), true);
+  f.wb.toggle();
+  f.wb.render(f.current.root, snapshot, [file, version('first'), version('second')]);
+  assert.equal(f.wb.state().open, false);
+  assert.equal(f.wb.openOutput('web', { source }), true);
+  await f.flush();
+  assert.equal(f.requests.at(-1)?.artifactId, 'version:second');
+  assert.equal(f.wb.state().open, true);
+  f.wb.toggle();
+  const owner = source.closest('[data-output-task]');
+  source.closest = selector => selector === '[data-output-task]' ? owner : selector === '[data-delivery]' ? {} : null;
+  owner.dataset.deliveryArchiveIds = 'version:second';
+  assert.equal(f.wb.openOutput('web', { source }), true, 'matching turn and archive ID refer to a single version');
+  f.wb.toggle();
+  delete owner.dataset.deliveryTurn;
+  owner.dataset.deliveryRestored = 'true';
+  assert.equal(f.wb.openOutput('web', { source }), true, 'a legacy receipt identifies its verified version');
+  f.wb.toggle();
+  owner.dataset.deliveryArchiveIds = 'version:first version:second';
+  assert.equal(f.wb.openOutput('web', { source }), false, 'ambiguous frozen versions cannot open a different turn');
+  assert.equal(f.wb.state().open, false);
+});

@@ -43,7 +43,7 @@ if (typeof electron === 'string') {
       window.calls=[];window.api={inspectDelivery:async(ref,ids)=>{calls.push(['inspect',ids]);return{ok:true,manifest:{files:[{path:'index.html',size:1}]}}},prepareDelivery:async(ref,ids)=>{calls.push(['prepare',ids]);return{ok:true,manifest:{files:[{path:'index.html',size:1}]}}}};
       messages.addEventListener('click',event=>{if(event.target.closest('[data-delivery-retry],[data-delivery-open],[data-delivery-local]'))void ChatDeliveries.handle(event.target,api)});
       window.render=(html,files,snapshot={},previous=null)=>messages.innerHTML=ChatOutputLinks.decorate(html,files,currentRef,{status:'idle',...snapshot},previous);void 0;`);
-    for (const name of ['chat-dom-patch.js', 'panels-chat-tools.js', 'library-file-icons.js', 'chat-deliveries.js', 'chat-output-links.js']) await js(fs.readFileSync(path.resolve(__dirname, '../components/panels', name), 'utf8'));
+    for (const name of ['chat-dom-patch.js', 'panels-chat-tools.js', 'library-file-icons.js', 'chat-deliveries.js', 'chat-output-links.js', 'chat-composer-bindings.js']) await js(fs.readFileSync(path.resolve(__dirname, '../components/panels', name), 'utf8'));
     await js('render(base,[site,shot]);');
     assert.equal(await js('messages.querySelector("[data-delivery-continue]")'), null, 'file actions replace the retired continue shortcut');
     assert.equal(await js('messages.querySelector("[data-delivery-retry]").hidden'),false);
@@ -56,6 +56,11 @@ if (typeof electron === 'string') {
     assert.equal(await js('calls.every(row=>row[1].length===1&&row[1][0]==="site")'), true);
     assert.equal(await js('messages.querySelectorAll("[data-output-image=shot]").length'), 1);
     assert.equal(await js('messages.querySelector("[data-delivery-files-count]").textContent'), '1 个文件');
+    assert.equal(await js(`(()=>{
+      const header=messages.querySelector('.ndelivery > header'), title=header.querySelector('.ndelivery-heading button');
+      return [header,header.querySelector('.ndelivery-icon'),title.firstElementChild].every(el=>ChatComposerBindings.outputPreviewButton(el)===title)
+        && [...header.querySelectorAll('.ndelivery-actions button')].every(el=>!ChatComposerBindings.outputPreviewButton(el));
+    })()`),true,'the single-file header and icon use the title target while toolbar buttons keep their own actions');
     report.cases.push('Explicit evidence appears above its final delivery without entering inspect, save or file-count collections');
 
     await js(`window.titledSite={...site,artifactId:'titled-site',kind:'website',title:'四季花园'};
@@ -65,6 +70,8 @@ if (typeof electron === 'string') {
       render(base,[titledSite,shot]);ChatDeliveries.hydrate(messages,{api:titleApi,ref:currentRef,snapshot:{status:'idle'}});void 0;`);
     await js('new Promise(resolve=>setTimeout(resolve,0))');
     assert.equal(await js('messages.querySelector("[data-delivery-title]").textContent'), '四季花园.zip', 'a website package retains its title and archive suffix after dependency inspection');
+    assert.equal(await js('!!ChatComposerBindings.outputPreviewButton(messages.querySelector(".ndelivery-icon"))'),false,
+      'the website becomes a package after inspecting its dependencies');
     await js('ChatDeliveries.handle(messages.querySelector("[data-delivery-retry]"),titleApi)');
     assert.equal(await js('messages.querySelector("[data-delivery-title]").textContent'), '四季花园.zip', 'a website package retains its title and archive suffix after saving');
     assert.equal(await js('titleCalls.every(row=>row[1].length===1&&row[1][0]==="titled-site")'), true);
@@ -76,6 +83,9 @@ if (typeof electron === 'string') {
       await js('new Promise(resolve=>setTimeout(resolve,0))');
       assert.equal(await js('messages.querySelector("[data-delivery-title]").textContent'), '成果包.zip', variant + ' retains the package title and archive suffix');
     }
+    await js(`render(base,[{...site,name:'report.docx',relative:'report.docx',artifactId:'office'}]);void 0`);
+    assert.equal(await js('!!ChatComposerBindings.outputPreviewButton(messages.querySelector(".ndelivery-icon"))'),false,
+      'card padding must not launch an external application');
     report.cases.push('A single website keeps its explicit title through multi-file inspection/save; multiple primary outputs and archives keep package naming, evidence stays out of selections');
 
     await js('render(base,[site]);window.prior=messages.cloneNode(true);render(base,[site,shot],{},prior);');
@@ -207,6 +217,24 @@ if (typeof electron === 'string') {
     await js('render(priorPage,[earlierShot,qwenPreview],{...paged,history:{...paged.history,leadingUserMessageIndex:0}});void 0');
     assert.equal(await js('messages.querySelector("[data-output-image]").dataset.outputImage'), 'version:first');
     report.cases.push('An assistant-only page shows only the screenshot of its indexed user turn');
+    const patchedScope = await js(`(()=>{
+      const host=document.createElement('div'), ref='scrolled-deliveries';
+      const html=owner=>'<article class="nmsg ai" data-chat-node="message:1" data-delivery-final="true" data-message-owner="'+owner+'" data-output-task=""><div class="ntext">index.html</div></article>';
+      const snapshot=turn=>({status:'idle',localReplica:true,messages:[{role:'user',submissionId:turn},{role:'assistant',done:true}]});
+      const legacy={...site,artifactId:'version:legacy',versionId:'legacy',originalArtifactId:'site',turnId:'legacy-archive:old'};
+      ChatTools.patchList(host,ChatOutputLinks.decorate(html(1),[legacy],ref,{...snapshot('first'),historyRecovery:{prefixMessageCount:2}}));
+      const row=host.firstElementChild, before=[row.dataset.deliveryTurn,row.dataset.deliveryArchiveIds,row.dataset.deliveryRestored];
+      const current={...legacy,artifactId:'version:second',versionId:'second',turnId:'second',userMessageIndex:0};
+      ChatTools.patchList(host,ChatOutputLinks.decorate(html(3),[current],ref,snapshot('second')));
+      const after=[row.dataset.deliveryTurn,row.hasAttribute('data-delivery-archive-ids'),row.hasAttribute('data-delivery-restored')];
+      ChatTools.patchList(host,html(3),{preserveDeco:true});
+      const sameOwner=row.dataset.deliveryTurn;
+      ChatTools.patchList(host,html(5),{preserveDeco:true});
+      return {reused:host.firstElementChild===row,before,after,sameOwner,nextOwnerRetained:row.hasAttribute('data-delivery-turn')};
+    })()`);
+    assert.deepEqual(patchedScope,{reused:true,before:['first','version:legacy','true'],after:['second',false,false],
+      sameOwner:'second',nextOwnerRetained:false},'a reused message must carry only its own decorated preview scope');
+    report.cases.push('Keyed history and streaming patches keep preview scope on its original turn');
     report.ok = true; fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report)); win.destroy(); app.quit();
   }).catch(error => { report.error = error.stack; fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.error(error); app.exit(1); });

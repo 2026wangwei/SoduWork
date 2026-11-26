@@ -72,6 +72,22 @@ def artifact_manifest(artifact: am.ArtifactVersion | None) -> dict:
         }
     manifest = dict(artifact.manifest or {})
     if manifest.get("schemaVersion") and all(key in manifest for key in ("primary", "problems")):
+        # Older clients submitted every visible file as an output. Preserve the
+        # frozen receipt, but present images in the reserved capture directory
+        # as evidence in downloads, acceptance summaries and current task views.
+        files = list(manifest.get("primary") or []) + list(manifest.get("supporting") or [])
+        captures = [row for row in files if delivery_manifest.is_capture_path(row.get("name"))]
+        if captures:
+            names = {row["name"] for row in captures}
+            for key in ("primary", "supporting"):
+                manifest[key] = [row for row in manifest.get(key) or [] if row.get("name") not in names]
+            manifest["files"] = manifest["primary"] + manifest["supporting"]
+            manifest["evidence"] = list(manifest.get("evidence") or []) + [
+                {**row, "category": "evidence"} for row in captures]
+            manifest["counts"] = {key: len(manifest.get(key) or []) for key in
+                                  ("primary", "supporting", "evidence", "internal")}
+            manifest["problems"] = [issue for issue in manifest["problems"] if issue.get("name") not in names]
+            manifest["complete"] = bool(manifest.get("complete") and (manifest["primary"] or manifest.get("url")))
         return manifest
     # Legacy candidates without classification and validation metadata are not presumed verified.
     files = []

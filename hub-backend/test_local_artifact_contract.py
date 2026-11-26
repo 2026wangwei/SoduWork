@@ -165,6 +165,24 @@ class LocalArtifactContractTests(unittest.TestCase):
         with zipfile.ZipFile(self.root / 'archive' / 'bundles' / bundle['filename']) as archive:
             self.assertEqual(set(archive.namelist()), {'result.md', 'appendix.md', 'summary.txt'})
 
+    def test_declared_image_delivers_while_reserved_capture_stays_loose_for_preview(self):
+        requested = 'design-screenshot.png'
+        capture = '.soduwork/evidence/home.png'
+        self.run.update(expectedOutputPaths=[requested, capture], state="done",
+                        artifactMode="files", cli="pi", lines=[])
+        for filename in [requested, capture, '界面效果截图.png', 'index.html', 'notes.md']:
+            self.write(filename, b'result', 1000)
+        with patch.dict(ai_local._RUNS, {self.run['ref']: self.run}), patch.object(
+                ai_local, '_store_dir', return_value=str(self.root / 'archive')):
+            status = ai_local.status_sync({}, self.run['ref'])
+        entries = {row['filename']: row for row in status['attachments']}
+        self.assertTrue(entries[requested]['declaredOutput'])
+        self.assertIn(capture, entries)
+        self.assertIn('界面效果截图.png', entries)
+        [bundle] = [row for row in entries.values() if row['id'].startswith('@bundle/')]
+        with zipfile.ZipFile(self.root / 'archive' / 'bundles' / bundle['filename']) as archive:
+            self.assertEqual(set(archive.namelist()), {requested, 'index.html', 'notes.md'})
+
     def test_support_files_do_not_trigger_auto_archive_but_overflow_remains_complete(self):
         self.write('index.html', b'<link href="site.css">', 1000)
         self.write('site.css', b'body{}', 1001)

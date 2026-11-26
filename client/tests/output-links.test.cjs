@@ -85,6 +85,23 @@ test('remote validation screenshots stay evidence while declared output images r
   assert.equal(check.processEvidence,true);
   assert.equal(check.primary,false);
 });
+test('synchronized attachments preserve a locally verified preview screenshot in both matching paths', async () => {
+  const source = {artifactId: 'shot', relative: 'capture.png', name: 'capture.png',
+    primary: false, processEvidence: true, size: 30};
+  const hub = {listAttachments: async () => [{id: 'a', filename: source.name, role: 'output',
+    size: source.size, evidenceMeta: {category: 'primary'}}]};
+  for (const cloud of [false, true]) {
+    const artifacts = [{...source}];
+    const outputs = {ok: true, artifacts};
+    if (cloud) outputs.cloudOutputs = [{taskId: 't', attachmentId: 'a', artifactId: 'shot',
+      relative: source.relative, size: source.size}];
+    const rows = await links.load({outputs: async () => outputs}, 'ref', ['t'], [], hub);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].processEvidence, true);
+    assert.equal(rows[0].primary, false);
+    assert.equal(links.fileTarget('capture.png', rows).artifactId, 'shot');
+  }
+});
 test('legacy non-array output payloads are ignored without crashing the renderer',async()=>{
   const result=await links.load({outputs:async()=>({ok:true,artifacts:{length:1,files:[]},deliverables:{length:1}})},'r',[],[],null);
   assert.deepEqual(result,[]);

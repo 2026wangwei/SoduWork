@@ -3,7 +3,7 @@
 // Select delivery roots, never delete workspace history. Dependency collection
 // still owns the complete file set required to use each selected root.
 const path = require('node:path');
-const processRoles = new Set(['process', 'evidence', 'verification', 'input', 'internal']);
+const processRoles = new Set(['process', 'evidence', 'preview', 'verification', 'input', 'internal']);
 const normalize = value => String(value || '').replace(/\\/g, '/').normalize('NFC');
 function text(message) {
   if (message?.role === 'assistant') {
@@ -54,8 +54,15 @@ function requestedExtension(request) {
   return extension;
 }
 function requestsCaptures(request) {
-  return /(?:交付|提供|生成|导出|保存|附上|需要|要).{0,20}(?:截图|效果图)|(?:deliver|provide|export|save|include).{0,30}(?:screenshot|screen capture)/i.test(request) &&
-    !/(?:不要|不需要|无需).{0,12}(?:截图|效果图)|(?:do not|don't|without).{0,20}screenshot/i.test(request);
+  // Delivery and presentation can be requested in the same sentence. Associate
+  // a file request with the screenshot itself rather than a preceding website.
+  return String(request || '').split(/[，,。；;！!？?\n]/).some(clause => {
+    if (!/(?:截图|效果图|screenshot|screen capture)/i.test(clause)) return false;
+    if (/(?:不要|不需要|无需|不必|请勿|不用|do not|don't|without).{0,24}(?:截图|效果图|交付|保存|导出|screenshot|deliver|save|export)|(?:不属于|不是).{0,5}交付物/i.test(clause)) return false;
+    if (/(?:截图|效果图).{0,18}(?:作为.{0,6}(?:交付物|附件|文件)|(?:单独|一并)交付)|(?:screenshots?|screen captures?).{0,24}as (?:a |an? separate )?(?:deliverable|file)/i.test(clause)) return true;
+    if (/(?:预览|看看|看一下|给.{0,8}看|展示|仅供|供.{0,5}查看|\bshow\b|\bpreview\b)/i.test(clause)) return false;
+    return /(?:交付|提供|生成|导出|保存|附上|需要|要).{0,20}(?:截图|效果图)|(?:deliver|provide|export|save|include).{0,30}(?:screenshot|screen capture)/i.test(clause);
+  });
 }
 function mentioned(answer, cwd, item) {
   const relative = normalize(item.relative || item.name);

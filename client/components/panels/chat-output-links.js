@@ -358,7 +358,7 @@
       const archiveIds = new Set(owner.dataset.deliveryArchiveIds.split(' '));
       const inferred = files.filter(file => file.versionId && archiveIds.has(key(file)));
       const originals = new Set(inferred.map(file => file.originalArtifactId));
-      return selected.filter(file => !originals.has(key(file))).concat(inferred);
+      return selected.filter(file => !archiveIds.has(key(file)) && !originals.has(key(file))).concat(inferred);
     }
     const own = files.filter(file => file.taskId === taskId);
     return own.length ? own : files.filter(file => !file.taskId);
@@ -1002,7 +1002,7 @@
     return purifier.sanitize(template.innerHTML, policy);
   }
   const outputRoles = new Set(['output', 'evidence', 'supporting', 'verification']);
-  const evidenceKinds = new Set(['deploy_screenshot', 'screenshot', 'screen_shot', 'screen_capture', 'verification', 'test_evidence']);
+  const evidenceKinds = new Set(['deploy_screenshot', 'screenshot', 'screen_shot', 'screen_capture', 'preview', 'verification', 'test_evidence', 'evidence', 'internal']);
   function rowEvidenceMeta(row) {
     return row && row.evidenceMeta && typeof row.evidenceMeta === 'object' ? row.evidenceMeta : {};
   }
@@ -1011,10 +1011,8 @@
     const role = String(row.role || '').toLowerCase();
     const meta = rowEvidenceMeta(row);
     const normalizeTag = value => String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
-    const kind = normalizeTag(meta.kind || meta.type);
-    const category = normalizeTag(meta.category || row.category);
-    return role === 'evidence' || role === 'verification' || category === 'evidence' ||
-      evidenceKinds.has(kind) || evidenceKinds.has(category);
+    return row.processEvidence === true || ['evidence', 'verification', 'process'].includes(role) ||
+      [meta.kind, meta.type, meta.category, row.category].some(tag => evidenceKinds.has(normalizeTag(tag)));
   }
   const isOutput = row => row && outputRoles.has(String(row.role || '').toLowerCase());
   async function load(api, ref, taskIds, previous, hub) {
@@ -1107,8 +1105,8 @@
         local.cloudTaskId = row.taskId;
         local.remoteAttachmentId = row.attachmentId;
         local.role = row.role || local.role || 'output';
-        local.primary = row.primary;
-        local.processEvidence = row.processEvidence;
+        local.processEvidence = Boolean(local.processEvidence || row.processEvidence);
+        local.primary = row.primary && !local.processEvidence;
         local.evidenceMeta = row.evidenceMeta;
       } else if (!local && !cloudConversation) {
         // Local-session delivery sync has no proof receipt, but its workspace is authoritative.
@@ -1134,8 +1132,8 @@
           found.attachmentId = row.attachmentId;
           found.remoteAttachmentId = row.attachmentId;
           found.role = row.role || 'output';
-          found.primary = row.primary;
-          found.processEvidence = row.processEvidence;
+          found.processEvidence = Boolean(found.processEvidence || row.processEvidence);
+          found.primary = row.primary && !found.processEvidence;
           found.evidenceMeta = row.evidenceMeta;
           found.round = row.round;
         } else remote.push(row);

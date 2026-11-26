@@ -304,7 +304,16 @@
   function openOutput(target, { source } = {}) {
     const value = String(target || '');
     const files = source && !value.startsWith('version:') ? links.scoped(source, WB.files) : WB.files;
-    const file = files.find((item) => fileKey(item) === value || item.path === value);
+    let file = files.find((item) => fileKey(item) === value || item.path === value);
+    if (!file && source?.closest('[data-delivery]')) {
+      // A live card keeps its upload ID after the turn is archived. Resolve the
+      // preview against that reply's immutable bytes, even after closing its tab.
+      const owner = source.closest('[data-output-task]')?.dataset;
+      const archiveIds = new Set((owner?.deliveryArchiveIds || '').split(' '));
+      const versions = files.filter(item => item.versionId && item.originalArtifactId === value &&
+        ((owner?.deliveryTurn && item.turnId === owner.deliveryTurn) || archiveIds.has(item.artifactId)));
+      if (versions.length === 1) file = versions[0];
+    }
     if (!file) return false;
     if (openPendingCloud(file, true)) return true;
     if (isTaskPreview(file)) { openTaskPreview(file, true); return true; }

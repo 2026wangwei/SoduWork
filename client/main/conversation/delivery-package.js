@@ -224,7 +224,7 @@ async function prepare(session, ids, options = {}) {
     if (!entries.has(spec.path || spec.entry)) continue;
     if (spec.files != null && !Array.isArray(spec.files)) throw Error('交付文件清单必须是文件路径列表');
     for (const rel of spec.files || []) {
-      if (evidence.has(evidencePath(rel))) continue;
+      if (evidence.has(evidencePath(rel)) || require('./screenshot-evidence').isReserved(rel)) continue;
       const name = safeRelative(rel);
       // Explicit lists often contain globbed test output. Required references
       // were already traversed above, so dropping optional evidence is safe.

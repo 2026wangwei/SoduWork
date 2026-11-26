@@ -800,17 +800,24 @@
       const parsed = typeof raw === 'number' ? raw : Date.parse(String(raw));
       return Number.isFinite(parsed) ? parsed : index;
     };
+    const categoryOf = file => String(file.category || file.evidenceMeta?.category || '');
+    const isEvidence = file => ['evidence', 'verification', 'process'].includes(String(file.role || '')) ||
+      [file.category, file.evidenceMeta?.category, file.evidenceMeta?.kind, file.evidenceMeta?.type].some(value =>
+        ['evidence', 'internal', 'screenshot', 'deploy_screenshot', 'screen_shot', 'screen_capture', 'preview', 'verification', 'test_evidence']
+          .includes(String(value || '').toLowerCase().replace(/[\s-]+/g, '_')));
+    // A preview may arrive after delivery. Only delivered outputs select the current batch and round.
+    const delivered = deliveryFiles.filter(file => file.role === 'output' && !isEvidence(file));
     const batchRows = new Map();
-    deliveryFiles.filter(file => String(file.role || '') === 'output').forEach((file, index) => {
+    delivered.forEach((file, index) => {
       const key = batchOf(file), old = batchRows.get(key) || {stamp: -1, index: -1};
       old.stamp = Math.max(old.stamp, stampOf(file, index)); old.index = Math.max(old.index, index); batchRows.set(key, old);
     });
     const latestBatch = [...batchRows.entries()].sort((a, b) => a[1].stamp - b[1].stamp || a[1].index - b[1].index).at(-1)?.[0] || 'legacy';
-    const latestRound = deliveryFiles.filter(file => batchOf(file) === latestBatch).reduce((max, file) => Math.max(max, roundOf(file)), 0);
+    const latestRound = delivered.filter(file => batchOf(file) === latestBatch).reduce((max, file) => Math.max(max, roundOf(file)), 0);
     const hasVersionedBatch = deliveryFiles.some(file => roundOf(file) > 0 || batchOf(file) !== 'legacy');
     const isCurrent = file => batchOf(file) === latestBatch && roundOf(file) === latestRound &&
       String(file.role || '') !== 'input';
-    const current = deliveryFiles.filter(file => ['input', 'evidence', 'verification', 'process'].includes(String(file.role || '')) || !hasVersionedBatch || isCurrent(file) ||
+    const current = deliveryFiles.filter(file => file.role === 'input' || isEvidence(file) || !hasVersionedBatch || isCurrent(file) ||
       (roundOf(file) === 0 && String(file.role || '') !== 'output'));
     const archived = deliveryFiles.filter(file => !current.includes(file));
     const isBundle = file => {
@@ -846,9 +853,6 @@
       ? '<details class="rq-material-group ' + className + '" data-rq-material-group="' + esc(key) + '"><summary>' + esc(title) + ' · ' + items.length + ' 份<small>' + esc(hint) + '</small></summary>' + items.map(materialRow).join('') + '</details>'
       : '';
     const input = current.filter(file => String(file.role || '') === 'input');
-    const categoryOf = file => String(file.category || file.evidenceMeta?.category || '');
-    const isEvidence = file => ['evidence', 'verification', 'process'].includes(String(file.role || '')) ||
-      ['evidence', 'internal'].includes(categoryOf(file));
     const evidence = current.filter(file => String(file.role || '') !== 'input' && isEvidence(file));
     const outputs = current.filter(file => String(file.role || '') === 'output' && !isEvidence(file));
     const other = current.filter(file => !['input', 'evidence', 'verification', 'process', 'output'].includes(String(file.role || '')) && !isEvidence(file));

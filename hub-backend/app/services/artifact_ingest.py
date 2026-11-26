@@ -182,7 +182,12 @@ async def _pull_artifacts(session: AsyncSession, tid: str, ctx: dict, s: dict, r
         import uuid as _uuid
         ctype = mimetypes.guess_type(fn)[0] or "application/octet-stream"
         verification, digest = await file_io.run(_verify_bytes, fn, data, ctype)
-        category = delivery_manifest.classify_name(fn, role="output")
+        # A workflow can explicitly request a screenshot as the result. The
+        # reserved capture directory stays verification-only for every provider.
+        declared_image = a.get("declaredOutput") is True and ctype.startswith("image/")
+        category = delivery_manifest.classify_name(fn, role="output", meta={
+            "category": "primary" if declared_image else None,
+        })
         if verification.get("state") != "passed":
             # Keep damaged deliverables and supporting files visible as failed delivery items.
             # Reclassifying them as process evidence would hide incomplete output packages.

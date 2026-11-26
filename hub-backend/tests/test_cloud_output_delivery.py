@@ -380,7 +380,7 @@ class RequirementReviewTests(AttachmentOriginTests):
                 await self.pull(name=name)
                 self.assertEqual(await self.reviews(), [])
 
-    async def website(self, *, settle=True, files=None):
+    async def website(self, *, settle=True, files=None, declared=()):
         files = files or {"index.html": b"<!doctype html><html><body>Site</body></html>",
                           "src/partials/header.html": b"<header><nav>Home</nav></header>",
                           "src/partials/footer.html": b"<footer>Contact</footer>",
@@ -401,7 +401,8 @@ class RequirementReviewTests(AttachmentOriginTests):
              patch("app.services.task_access.publish_owner", new_callable=AsyncMock), \
              patch("app.services.tasks.task_to_api_live", new_callable=AsyncMock, return_value={}):
             return await artifact_ingest.pull_artifacts(self.session, "task", {}, {
-                "done": True, "round": 1, "attachments": [{"id": name, "filename": name} for name in files],
+                "done": True, "round": 1, "attachments": [
+                    {"id": name, "filename": name, "declaredOutput": name in declared} for name in files],
             }, ref="website", settle=settle)
 
     async def test_website_components_pass_but_screenshots_are_not_deliverables(self):
@@ -415,6 +416,40 @@ class RequirementReviewTests(AttachmentOriginTests):
         shot = await self.session.scalar(select(models.Attachment).where(models.Attachment.filename == "shots/home.png"))
         self.assertEqual(shot.role, "verification")
         self.assertEqual(self.task.status, "doing", "Review never accepts the task automatically")
+
+    async def test_preview_captures_remain_viewable_while_requested_images_are_delivered(self):
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+        filenames = [".soduwork/evidence/screen.png", "网页效果截图.png", "requested-screenshot.png", "poster.png"]
+        await self.website(files=dict.fromkeys(filenames, png), declared=[filenames[0], filenames[2]])
+        artifact = await self.session.scalar(select(automation_models.ArtifactVersion))
+        self.assertEqual({row["name"] for row in artifact.manifest["files"]}, set(filenames[2:]))
+        self.assertEqual({row["name"] for row in artifact.manifest["evidence"]}, set(filenames[:2]))
+        rows = {row.filename: row for row in await self.session.scalars(select(models.Attachment))}
+        self.assertTrue(all(rows[name].role == "verification" for name in filenames[:2]))
+        # Historical desktop receipts could mark everything visible as a primary output.
+        reserved = rows[filenames[0]]
+        reserved.role = "output"
+        reserved.evidence_meta = {**reserved.evidence_meta, "category": "primary"}
+        self.assertEqual(attachment_to_api(reserved)["category"], "evidence")
+        old = rows["poster.png"]
+        old.evidence_meta = {**old.evidence_meta, "kind": "deploy_screenshot"}
+        self.assertEqual(attachment_to_api(old)["category"], "evidence")
+
+    def test_frozen_review_views_remove_only_reserved_captures_without_mutating_the_receipt(self):
+        from app.services import acceptance_summary, delivery_truth
+        shot = {"id": "old-shot", "name": ".soduwork/evidence/home.jpg", "category": "primary"}
+        requested = {"id": "poster", "name": "design-screenshot.jpg", "category": "primary"}
+        manifest = {"schemaVersion": "1.0", "primary": [shot, requested], "supporting": [],
+                    "evidence": [], "problems": [], "complete": True}
+        artifact = SimpleNamespace(kind="files", manifest=manifest)
+        presented = delivery_truth.artifact_manifest(artifact)
+        self.assertEqual(acceptance_summary._files(artifact), [requested])
+        self.assertEqual(presented["evidence"], [{**shot, "category": "evidence"}])
+        self.assertEqual(presented["counts"]["primary"], 1)
+        self.assertTrue(presented["complete"])
+        self.assertEqual(manifest["primary"], [shot, requested])
+        artifact.manifest = {**manifest, "primary": [shot]}
+        self.assertFalse(delivery_truth.artifact_manifest(artifact)["complete"])
 
     async def seed_legacy_component_failure(self):
         await self.website(settle=False)

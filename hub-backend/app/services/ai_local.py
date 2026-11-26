@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import copy
 import logging
+import mimetypes
 import os
 import re
 import subprocess
@@ -849,6 +850,7 @@ def status_sync(cfg: dict, ref: str) -> dict:
     code_task = artifact_mode == "git"
     # When the remote branch is authoritative, skip full repository snapshots and ZIP creation.
     entries = [] if run["state"] == "running" or code_task else _fresh_entries(run)
+    declared = []
     if run["state"] != "running":
         declared = declared_outputs.changed_entries(run)
         by_path = {str(rel).replace("\\", "/"): (rel, mtime)
@@ -872,7 +874,13 @@ def status_sync(cfg: dict, ref: str) -> dict:
             for item in (run.get("lines") or []) if item.get("kind") == "say"]
     final_text = next((text for text in reversed(says) if text), "")[:20000]
     attachments = ([{"id": bundle["id"], "filename": bundle["filename"]}] if bundle else [])
-    attachments += [{"id": f, "filename": _rel_name(f)} for f in shown]
+    declared_names = {_rel_name(rel) for rel, _ in declared}
+    for relative in shown:
+        name = _rel_name(relative)
+        item = {"id": relative, "filename": name}
+        if name in declared_names and (mimetypes.guess_type(name)[0] or "").startswith("image/"):
+            item["declaredOutput"] = True
+        attachments.append(item)
     return {
         "ok": True, "status": access_policy.visible_state(run), "title": run.get("title") or "",
         **access_policy.snapshot(run),

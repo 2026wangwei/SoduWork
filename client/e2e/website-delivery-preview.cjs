@@ -18,9 +18,12 @@ if (typeof electron === 'string') {
   app.disableHardwareAcceleration(); app.on('window-all-closed', () => {});
   const outputs = require('../main/pi-session/outputs'), runtime = require('../main/conversation/artifact-runtime');
   const handle = { cwd, sessionId: 'website-delivery-preview', outputSnapshot: () => outputs.scan(cwd, 0, 1) };
+  const sessions = new Map([['preview-fixture', handle]]);
+  const getSession = ref => sessions.get(ref);
   const report = { ok: false, cases: [], limits: ['Deterministic webpage and transcript; no paid model or Hub calls.',
     'Uses actual Chromium capture, production artifact IPC, native image decoding and mouse input.',
     'The isolated fixture replaces the desktop page trust check only for its exact main frame; delivery inspection uses production workers.',
+    'Library save uses a fixture receipt after production packaging; no account is required.',
     'Clipboard captured at browser API boundary; does not overwrite the system clipboard.'] };
   let win, capture, applicationServer; const views = [];
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -39,6 +42,63 @@ if (typeof electron === 'string') {
   async function screenshot(name) {
     await until(() => js('Number(getComputedStyle(document.querySelector(".ncw")).opacity) >= .999'), 'preview opening transition');
     await delay(100); fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage()).toPNG());
+  }
+  async function verifySavedTurnPreview() {
+    const journal = require('../main/conversation/file-change-journal');
+    const history = require('../main/conversation/device-history-artifacts.cjs');
+    const storage = require('../main/conversation/device-artifact-archive.cjs');
+    const versions = require('../main/conversation/artifact-versions.cjs');
+    const ref = 'versioned-preview', profile = app.getPath('userData');
+    const project = fs.realpathSync.native(fs.mkdtempSync(path.join(profile, 'turn-site-')));
+    const file = path.join(project, 'index.html');
+    const source = { cwd: project, sessionId: ref, outputSnapshot: () => outputs.scan(project, 0, 1) };
+    sessions.set(ref, source);
+    let saved;
+    const record = async (turnId, before) => {
+      const changes = journal.compare(before, await journal.snapshot(project), { turnId });
+      const next = await history.capture({ row: { id: ref, cwd: project, adapterId: 'pi' }, previous: saved, journal: changes, verifiedTurn: true });
+      const current = await storage.preserve(profile, ref, next, saved, () => {});
+      await storage.retire(profile, ref, saved?.archive, current.archive, true);
+      saved = current;
+    };
+    const contents = title => '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>';
+    const beforeFirst = await journal.snapshot(project);
+    fs.writeFileSync(file, contents('First round'));
+    await record('first', beforeFirst);
+    runtime.bindTurnArchives(source, () => versions.readers(profile, ref, saved.archive, () => {}));
+    const beforeSecond = await journal.snapshot(project);
+    fs.writeFileSync(file, contents('Second round'));
+    await js(`window.configureTurns(${JSON.stringify(ref)})`);
+    const card = '[data-chat-node="message:3"] [data-delivery]';
+    const heading = card + ' .ndelivery-heading [data-open-app]';
+    const liveId = await js(`document.querySelector(${JSON.stringify(heading)}).dataset.openApp`);
+    assert.ok(liveId && !liveId.startsWith('version:'), 'current card must own the live ID');
+    await click(heading);
+    const byTitle = title => views.filter(view => view.webContents && !view.webContents.isDestroyed() && view.webContents.getTitle() === title);
+    await until(() => byTitle('Second round').length > 0, 'latest live website');
+    await click('[data-wb-close]');
+    assert.equal(await js('ChatWorkbench.state().open'), false);
+
+    // The background archive index can settle before a live card is replaced.
+    await record('second', beforeSecond);
+    await js('refreshTurnIndex()');
+    assert.deepEqual(await js(`files.filter(f=>f.originalArtifactId===${JSON.stringify(liveId)}).map(f=>f.turnId).sort()`), ['first','second']);
+    await click(card + ' [data-delivery-retry]');
+    await until(() => js('Boolean(window.savedPayload)'), 'upload to fixture library');
+    assert.equal(Buffer.from(await js('savedPayload.data'), 'base64').toString(), contents('Second round'));
+    await until(() => js(`document.querySelector(${JSON.stringify(card + ' [data-delivery-open]')}).hidden === false`), 'saved delivery actions');
+    fs.writeFileSync(file, contents('Later workspace edit'));
+    await click(heading);
+    await until(() => js('ChatWorkbench.state().open'), 'saved card reopens preview');
+    const archived = () => byTitle('Second round').find(view => view.webContents.getURL().includes('/.soduwork-preview-'));
+    await until(() => Boolean(archived()), 'second turn original in native website preview');
+    assert.equal(await archived().webContents.executeJavaScript('document.querySelector("h1").textContent'), 'Second round');
+    await click('[data-wb-close]');
+    assert.equal(await js('ChatWorkbench.state().open'), false);
+    await click(card + ' .ndelivery-icon');
+    await until(() => js('ChatWorkbench.state().open'), 'saved card icon reopens preview');
+    assert.equal(await js('document.querySelector("[data-wb-tab][aria-selected=true]").textContent.trim()'), 'Second round');
+    report.cases.push('Click, close, upload, and reopen a website card by title and icon after archiving two same-named turns; upload and preview retain the clicked turn.');
   }
   app.whenReady().then(async () => {
     fs.writeFileSync(path.join(cwd, 'style.css'), ':root{color-scheme:light}');
@@ -61,8 +121,8 @@ if (typeof electron === 'string') {
     assert.equal(shot.primary, false); assert.equal(shot.processEvidence, true);
     assert.equal(indexed.delivery.items.some(file => file.artifactId === shot.artifactId), false);
     report.cases.push('Actual webpage capture is indexed as evidence without changing the HTML deliverable or acceptance list');
-    require('../main/agent-runtime/pi-session-bridge').get = ref => ref === 'preview-fixture' ? handle : null;
-    require('../main/pi-session/artifact-ipc').install({ app, ipcMain, BrowserWindow, session: { get: ref => ref === 'preview-fixture' ? handle : null }, workDir: () => output });
+    require('../main/agent-runtime/pi-session-bridge').get = getSession;
+    require('../main/pi-session/artifact-ipc').install({ app, ipcMain, BrowserWindow, session: { get: getSession }, workDir: () => output });
     require('../main/file-type-icons.cjs').install({ app, ipcMain });
     require('../main/work-preview').install({ ipcMain, BrowserWindow,
       WebContentsView: function (options) { const view = new WebContentsView(options); views.push(view); return view; },
@@ -166,6 +226,8 @@ if (typeof electron === 'string') {
       assert.ok(await js('document.documentElement.scrollWidth<=innerWidth'), 'No page overflow at ' + width);
       await screenshot('width-' + width);
     }
+    win.setSize(1280, 860);
+    await verifySavedTurnPreview();
     assert.deepEqual(await js('errors'), []); report.ok = true;
   }).catch(async error => {
     report.error = error.stack || String(error);

@@ -9,6 +9,10 @@ const metadataKeys = ['artifactId', 'kind', 'name', 'title', 'summary', 'relativ
   'size', 'at', 'preview', 'primary', 'role', 'processEvidence', 'evidenceSource', 'actions',
   'pluginDraft', 'pluginPackage', 'skillPackage', 'pluginName', 'pluginVersion',
   'pluginDeliveryPaths', 'pluginIdentity', 'pluginSuperseded', 'pluginRevision', 'pluginRevisionAt'];
+function recordedEvidence(file) {
+  return file.processEvidence === true || require('./delivery-selection').processRoles.has(file.role) ||
+    require('./screenshot-evidence').isReserved(file.relative);
+}
 const stamp = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
 const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => value === b[index]);
 
@@ -67,8 +71,9 @@ function restore(cwd, history, current = []) {
       if (!candidate) continue;
       const stat = fs.lstatSync(candidate, { bigint: true });
       if (!stat.isFile() || stat.isSymbolicLink() || !same(row.stamp, stamp(stat))) continue;
-      files.push({ ...file, path: path.resolve(cwd, file.relative), primary: false,
-        changedInTurn: false, historical: true, historicalPrimary: file.primary !== false,
+      const evidence = recordedEvidence(file);
+      files.push({ ...file, path: path.resolve(cwd, file.relative), primary: false, processEvidence: evidence,
+        changedInTurn: false, historical: true, historicalPrimary: !evidence && file.primary !== false,
         historicalSource: row.source, historicalVersion: row.stamp });
       indexed.add(file.artifactId);
     } catch (_) { /* Unavailable or changed historical files do not authorize new bytes. */ }
@@ -160,4 +165,4 @@ function continuedPlugins(handle) {
   return state;
 }
 
-module.exports = { capture, restore, forContinuation, continuedPlugins, stamp, same };
+module.exports = { capture, restore, forContinuation, continuedPlugins, recordedEvidence, stamp, same };

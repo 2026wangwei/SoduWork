@@ -158,7 +158,10 @@ async def collect(rows, *, primary_ids=(), force_bundle=False, validate_standalo
             parts, contents, online = await asyncio.to_thread(_describe_bundle, data, limits)
             dependencies.extend(online)
             for item, content in zip(parts, contents):
-                _merge_file(merged, item, content, limits)
+                # Legacy transport ZIPs could contain the desktop's preview captures.
+                # Validate the whole original archive before omitting these members.
+                if not delivery_manifest.is_capture_path(item["path"]):
+                    _merge_file(merged, item, content, limits)
             if len(bundles) == 1:
                 original, original_paths = data, {item["path"] for item in parts}
         else:

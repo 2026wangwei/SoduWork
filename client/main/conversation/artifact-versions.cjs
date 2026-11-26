@@ -5,8 +5,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { assertNoLinks } = require('../plugin-resources');
 const { portablePath, MAX_FILES } = require('./portable-workspace');
-const { same, stamp } = require('./runtime-artifacts.cjs');
+const { same, stamp, recordedEvidence } = require('./runtime-artifacts.cjs');
 const storage = () => require('./device-artifact-archive.cjs');
+const screenshots = require('./screenshot-evidence');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 
 function versionId(turnId, relative, sha256) {
@@ -77,6 +78,11 @@ function dependencyLookup(root, byName) {
   };
 }
 
+// Resolve URLs against the spelling used by the referring document, including its archived aliases.
+function dependencyTarget(webRoot, requested, ref) {
+  return ref.startsWith('/') ? path.posix.join(webRoot, ref.slice(1)) : path.posix.join(path.posix.dirname(requested), ref);
+}
+
 // The archive receipt, not a filename supplied by the model, identifies the bytes.
 // Keep each completed turn's first committed version when a later capture retries.
 function record(archive, prior, history, dependencyRows) {
@@ -88,7 +94,7 @@ function record(archive, prior, history, dependencyRows) {
     for (const alias of row.aliases || []) aliasOwners.set(turnPath(row.turnId, alias), row.relative);
     aliasCounts.set(row.turnId, (aliasCounts.get(row.turnId) || 0) + (row.aliases?.length || 0));
   }
-  let aliasesChanged = false;
+  let metadataChanged = false;
   const committed = new Map(archive.files.map(file => [file.relative, file]));
   const newDeliveries = [], identifiedDeliveries = new Map();
   const candidates = dependencyRows || [...(history.items || []), ...(history.resources || [])].filter(row => row.source?.turnId);
@@ -102,12 +108,13 @@ function record(archive, prior, history, dependencyRows) {
       const file = committed.get(relative), key = turnPath(turnId, relative);
       if (!file || indices.has(key) || !same(file.sourceStamp, row.stamp)) continue;
       indices.set(key, versions.length);
-      if (!resource) newDeliveries.push({ relative, source });
+      const evidence = recordedEvidence(row.metadata);
+      if (!resource && !evidence) newDeliveries.push({ relative, source });
       if (!resource && !dependencyRows && row.source?.sessionId)
         identifiedDeliveries.set(unassignedTurn(row), source);
       versions.push({ turnId, relative, versionId: versionId(turnId, relative, file.sha256),
         generation: archive.generation, sha256: file.sha256, stamp: file.stamp,
-        metadata: row.metadata, source, resource, aliases: [] });
+        metadata: row.metadata, source, resource, aliases: [], ...(evidence ? { deliveryDependency: false } : {}) });
     }
   }
   add(history.items, false);
@@ -122,11 +129,20 @@ function record(archive, prior, history, dependencyRows) {
       const node = pending.pop();
       for (const ref of committed.get(node.canonical)?.dependencies || []) {
         // Browsers resolve nested URLs relative to the requested spelling.
-        const target = ref.startsWith('/') ? path.posix.join(webRoot, ref.slice(1)) : path.posix.join(path.posix.dirname(node.requested), ref);
+        const target = dependencyTarget(webRoot, node.requested, ref);
         const row = lookup(target);
         if (!row || row.source.sessionId !== source.sessionId) continue;
         add([row], true, source);
         const canonical = row.metadata.relative, turnId = source.turnId;
+        // A verified document may actually embed a capture (e.g. an image in a report).
+        // Include that dependency in its working copy, while retaining the image's evidence role.
+        if (recordedEvidence(row.metadata) && !screenshots.isReserved(canonical)) {
+          const i = indices.get(turnPath(turnId, canonical)), version = versions[i];
+          if (version && version.sha256 === committed.get(canonical)?.sha256 && !version.deliveryDependency) {
+            versions[i] = { ...version, deliveryDependency: true };
+            metadataChanged = true;
+          }
+        }
         const alias = turnPath(turnId, target);
         if (target !== canonical && !indices.has(alias) && !aliasOwners.has(alias)) {
           const index = indices.get(turnPath(turnId, canonical)), version = versions[index];
@@ -135,7 +151,7 @@ function record(archive, prior, history, dependencyRows) {
           versions[index] = { ...version, aliases: [...(version.aliases || []), target] };
           aliasOwners.set(alias, canonical);
           aliasCounts.set(turnId, count + 1);
-          aliasesChanged = true;
+          metadataChanged = true;
         }
         if (!queued.has(target) && queued.size < MAX_FILES) {
           queued.add(target);
@@ -161,7 +177,7 @@ function record(archive, prior, history, dependencyRows) {
     versions.push({ ...file, source, turnId: source.turnId, versionId: versionId(source.turnId, file.relative, file.sha256), aliases });
   }
   if (versions.length) archive.versions = versions;
-  return aliasesChanged || versions.length !== (prior?.versions?.length || 0);
+  return metadataChanged || versions.length !== (prior?.versions?.length || 0);
 }
 
 // Older backups can have authenticated bytes without a recorded turn. Pin a
@@ -174,7 +190,7 @@ async function pinLegacyDeliveries(profile, id, history, guard) {
   const signature = (name, hash, at) => JSON.stringify([name, hash, at]);
   const pinned = new Set((archive.versions || []).filter(file => !file.resource)
     .map(file => signature(file.relative, file.sha256, file.metadata.at)));
-  const primary = (history.items || []).filter(row => row.metadata.primary !== false && !row.metadata.processEvidence &&
+  const primary = (history.items || []).filter(row => row.metadata.primary !== false && !recordedEvidence(row.metadata) &&
     !row.metadata.previewOf && row.metadata.role !== 'supporting');
   const single = primary.length === 1 && !primary[0].metadata.pluginDraft && primary[0];
   const candidates = (history.items || []).filter(row => {
@@ -320,9 +336,42 @@ async function existingCopies(workspace, destination, versions, guard) {
   return copies;
 }
 
-async function exportTurn({ profile, id, archive, turnId, workspace, workspaceKey, guard }) {
-  const versions = (archive?.versions || []).filter(row => row.turnId === turnId && !row.metadata?.previewOf);
-  if (!versions.length) return [];
+// Old versions predate the per-file dependency flag. Recover it only from this
+// turn's frozen bytes, never from the latest generation's same-named document.
+async function workingCopyVersions(profile, id, turn, requestedVersionId, authorize) {
+  const included = new Set(turn.filter(row => row.deliveryDependency || !recordedEvidence(row.metadata) || row.versionId === requestedVersionId));
+  const unknown = new Set(turn.filter(row => !included.has(row) && row.deliveryDependency === undefined && !screenshots.isReserved(row.relative)));
+  if (!unknown.size) return [...included];
+  const byName = new Map(turn.map(row => [row.relative, row]));
+  for (const row of turn) for (const alias of row.aliases || []) if (!byName.has(alias)) byName.set(alias, row);
+  const refs = new Map();
+  for (const entry of turn.filter(row => !row.resource && !recordedEvidence(row.metadata))) {
+    const webRoot = path.posix.dirname(entry.relative), pending = [entry.relative], seen = new Set(pending);
+    while (pending.length && unknown.size) {
+      const requested = pending.pop(), row = byName.get(requested);
+      if (row.metadata.size > 4 * 1024 * 1024 || !/\.(?:html?|css|m?js|svg|md|markdown|json)$/i.test(row.relative)) continue;
+      if (!refs.has(row)) {
+        await authorize();
+        const original = await proof(profile, id, row);
+        const bytes = await storage().readVersion(original.root, row.relative, original.stamp);
+        if (!bytes || digest(bytes) !== row.sha256) throw Error('成果原件已变化');
+        refs.set(row, dependencies(row.relative, bytes));
+      }
+      for (const ref of refs.get(row)) {
+        const target = dependencyTarget(webRoot, requested, ref), dependency = byName.get(target);
+        if (!dependency || seen.has(target) || seen.size >= MAX_FILES || screenshots.isReserved(dependency.relative)) continue;
+        if (unknown.delete(dependency)) included.add(dependency);
+        seen.add(target);
+        pending.push(target);
+      }
+    }
+  }
+  return turn.filter(row => included.has(row));
+}
+
+async function exportTurn({ profile, id, archive, turnId, workspace, workspaceKey, guard, requestedVersionId }) {
+  const turn = (archive?.versions || []).filter(row => row.turnId === turnId && !row.metadata?.previewOf);
+  if (!turn.length) return [];
   if (!require('./delivery-workspace.cjs').validKey(workspaceKey) || !path.isAbsolute(workspace) ||
       !fs.lstatSync(workspace).isDirectory()) throw Error('工作副本目录无效');
   if (!fs.lstatSync(profile).isDirectory()) throw Error('成果目录无效');
@@ -341,6 +390,8 @@ async function exportTurn({ profile, id, archive, turnId, workspace, workspaceKe
   const ordinary = path.join(base, 'turn-' + digest(turnId).slice(0, 24));
   let destination = ordinary;
   await authorize();
+  const versions = await workingCopyVersions(profile, id, turn, requestedVersionId, authorize);
+  if (!versions.length) return [];
   const existing = await existingCopies(workspace, ordinary, versions, authorize);
   if (existing) {
     if (existing.every(row => !row.missing)) return existing;
@@ -429,7 +480,7 @@ async function exportTurn({ profile, id, archive, turnId, workspace, workspaceKe
 async function exportCopy(options) {
   const version = options.archive?.versions?.find(row => row.versionId === options.versionId);
   if (!version || version.metadata?.previewOf) throw Error('找不到指定的成果版本');
-  const copies = await exportTurn({ ...options, turnId: version.turnId });
+  const copies = await exportTurn({ ...options, turnId: version.turnId, requestedVersionId: version.versionId });
   return copies.find(copy => copy.versionId === version.versionId);
 }
 

@@ -412,9 +412,7 @@ def attachment_to_api(a) -> dict[str, Any]:
     if role == "input" and (by_agent or str(uploaded).lower() in {"soduwork ai", "soduwork"}):
         role = "output"  # Legacy role defaults must not classify AI outputs as human inputs.
     evidence_meta = getattr(a, "evidence_meta", None) or {}
-    explicit_category = str(evidence_meta.get("category") or "").strip().lower()
-    category = explicit_category if explicit_category in {"primary", "supporting", "evidence", "internal"} else \
-        delivery_manifest.classify_name(a.filename, role=role, meta=evidence_meta)
+    category = delivery_manifest.classify_name(a.filename, role=role, meta=evidence_meta)
     return {
         "id": a.id,
         "taskId": a.task_id,

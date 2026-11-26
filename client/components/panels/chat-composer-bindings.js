@@ -1,6 +1,11 @@
 /* Renderer behavior extracted without copying its owner's state. */
 (function (global) {
   'use strict';
+  function outputPreviewButton(target) {
+    const explicit = target.closest('[data-open-app]');
+    if (explicit || target.closest('button,a,[role="button"]')) return explicit;
+    return target.closest('.ndelivery[data-preview-file] > header')?.querySelector('.ndelivery-heading > button[data-open-app]');
+  }
   const nextMessageWindowSize = current => Math.min(2000, Math.max(80, Number(current) || 80) + 80);
   // Empty and form-only conversations use new-session options; selecting an option does not initialize an Agent.
   function createDraftControls(ctx) {
@@ -812,7 +817,7 @@ function _bind(el) {
       const libraryBundle = e.target.closest('[data-library-bundle]');
       if (libraryBundle) { void global.LibraryTransfer?.downloadBundle(libraryBundle); return; }
       if (librarySave) { if (!librarySave.disabled) void global.LibraryTransfer?.saveDecorated(librarySave); return; }
-      const preview = e.target.closest('[data-open-app]');
+      const preview = outputPreviewButton(e.target);
       const pluginDraft = e.target.closest('[data-install-plugin-draft]');
       if (pluginDraft) {
         if (typeof global.openConversationPluginDraft === 'function') {
@@ -896,5 +901,5 @@ function _toggleChatMic() {
 
   return { _bind, _mount, _loadChatSkills, _openPluginBuilder, _toggleChatMic };
   }
-  global.ChatComposerBindings = { create, createDraftControls, _nextMessageWindowSize: nextMessageWindowSize };
+  global.ChatComposerBindings = { create, createDraftControls, outputPreviewButton, _nextMessageWindowSize: nextMessageWindowSize };
 })(window);

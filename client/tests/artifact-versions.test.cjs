@@ -38,6 +38,36 @@ function fixture(t) {
   return { root, profile, id, workspace, workspaceKey, guard, cwd, deliver };
 }
 
+test('the published report includes its verified image dependency but omits an independent preview', async t => {
+  const f = fixture(t);
+  const archive = await f.deliver('one', {
+    'index.html': '<img src="verify-top.png">',
+    'verify-top.png': 'embedded image', 'verify-bottom.png': 'chat preview',
+  });
+  assert.equal(archive.versions.find(row => row.relative === 'verify-top.png').metadata.processEvidence, true);
+  const copies = await versions.exportTurn({ ...f, archive, turnId: 'one' });
+  assert.deepEqual(copies.map(copy => path.basename(copy.path)).sort(), ['index.html', 'verify-top.png']);
+});
+
+test('legacy working copies follow each turn’s archived HTML and CSS to its own embedded screenshot', async t => {
+  const f = fixture(t);
+  const files = (turn, image) => ({
+    'index.html': '<title>' + turn + '</title><link rel="stylesheet" href="style.css">',
+    'style.css': 'body{background:url("' + image + '")}',
+    'verify-top.png': turn + ' top', 'verify-bottom.png': turn + ' bottom',
+  });
+  await f.deliver('first', files('first', 'verify-top.png'));
+  const archive = await f.deliver('second', files('second', 'verify-bottom.png'));
+  // Before screenshot dependency receipts, none of these versions had the flag.
+  for (const row of archive.versions) delete row.deliveryDependency;
+  fs.rmSync(f.cwd, { recursive: true });
+  for (const [turn, image] of [['first', 'top'], ['second', 'bottom']]) {
+    const copies = await versions.exportTurn({ ...f, archive, turnId: turn });
+    assert.deepEqual(copies.map(copy => path.basename(copy.path)).sort(), ['index.html', 'style.css', 'verify-' + image + '.png']);
+    assert.equal(fs.readFileSync(copies.find(copy => copy.path.endsWith('.png')).path, 'utf8'), turn + ' ' + image);
+  }
+});
+
 test('same-name originals from two turns survive later edits, restart and a copied profile', async t => {
   const f = fixture(t);
   await f.deliver('first', { 'report.md': 'A' });

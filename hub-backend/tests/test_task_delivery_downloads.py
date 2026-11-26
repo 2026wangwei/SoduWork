@@ -144,6 +144,14 @@ class TaskDeliveryDownloadsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unquote(reply.headers["Content-Disposition"].split("''")[1]),
                          "Website and report.zip")
 
+    async def test_reserved_capture_is_removed_from_legacy_transport_zip_and_loose_files(self):
+        files = {"index.html": b"<html>Site</html>", "assets/screenshot.png": b"website asset"}
+        capture = ".soduwork/evidence/home.png"
+        zipped = archive_bytes({**files, capture: b"capture"}.items())
+        tid, version, _ = await self.seed([("完整产出-site.zip", zipped, "output"),
+                                           (capture, b"capture", "output")])
+        self.assert_archive(await self.download(tid, version), files)
+
     def test_bundle_filenames_match_desktop_windows_rules(self):
         for title, expected in [
             ("春节传统文化由来介绍", "春节传统文化由来介绍.zip"),

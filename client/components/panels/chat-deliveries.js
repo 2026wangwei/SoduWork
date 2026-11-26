@@ -258,7 +258,8 @@
         joinPreviews(message, message.querySelector('.ndelivery')); continue;
       }
       available.forEach(f => used.add(key(f)));
-      const matchesReceipt = (message === messages[0] || snapshot.deliverySync?.currentTurn === false) && available.every(captured);
+      const matchesReceipt = (message === messages[0] || snapshot.deliverySync?.currentTurn === false) &&
+        snapshot.deliverySync?.artifactVersions?.length === available.length && available.every(captured);
       const revision = matchesReceipt && snapshot.deliverySync?.revision;
       const card = deliveryCard(root.ownerDocument, available, ref, snapshot, { taskId, current: message === messages[0], revision });
       message.appendChild(card);
@@ -348,6 +349,7 @@
         if (!rows.length) return;
       }
       const card = deliverySection(doc, owner === root && rows.length > 1 ? '' : '<header>' + deliveryHeading(rows, false) + '</header>');
+      if (rows.length === 1 && canPreviewFile(rows[0])) card.dataset.previewFile = '';
       if (rows.length > 1) {
         const details = doc.createElement('details'); details.open = true; details.className = 'ndelivery-files';
         const summary = doc.createElement('summary'); summary.textContent = tx(owner === root ? '会话成果' : text.title);
@@ -400,6 +402,10 @@
     for (const [reply, rows] of groupsWithFiles) append(reply, rows);
     append(root, [...remaining.values()]);
   }
+  function canPreviewFile(file) {
+    const kind = global.ChatTools?.previewKind?.(file);
+    return Boolean(kind && kind !== 'external');
+  }
   function canPreviewSaved(group, delivery) {
     if (!delivery || group.files.length !== 1) return false;
     const rows = delivery.files || group.files;
@@ -407,10 +413,7 @@
     const file = group.files[0];
     const savedFile = { ...file, name: delivery.filename || rows[0].path || file.name };
     // Saving changes storage, not preview support. Use the same policy as the chat workbench.
-    return [file, savedFile].every(item => {
-      const kind = global.ChatTools?.previewKind?.(item);
-      return Boolean(kind && kind !== 'external');
-    });
+    return canPreviewFile(file) && canPreviewFile(savedFile);
   }
   function paint(card, group) {
     const job = jobs.get(group.id), result = job?.delivery || group.delivery;
@@ -442,6 +445,8 @@
     }
     const rows = result?.files || job?.manifest?.files || group.package?.files;
     const count = rows?.length || group.files.length;
+    if (count === 1 && group.files.length === 1 && canPreviewFile(group.files[0])) card.dataset.previewFile = '';
+    else delete card.dataset.previewFile;
     const archive = card.querySelector('.ndelivery-actions [data-delivery-archive]');
     if (archive) archive.hidden = count < 2 && !/\.zip$/i.test(group.files[0]?.name || '');
     const format = card.querySelector('[data-delivery-format]');
@@ -577,7 +582,7 @@
       if (!group || group.ref !== ref || group.scope !== scope()) return;
       const saved = snapshot?.deliverySync;
       const receiptRevision = group.receiptRevision || group.snapshot?.deliverySync?.revision;
-      if (!group.taskId && (!receiptRevision || receiptRevision === saved?.revision) && (group.current || saved?.currentTurn === false) && saved?.artifactVersions?.length && group.files.every(f => saved.artifactVersions.some(v => v.id === key(f) && String(v.at || 0) === String(f.at || 0) && Number(v.size || 0) === Number(f.size || 0)))) {
+      if (!group.taskId && (!receiptRevision || receiptRevision === saved?.revision) && (group.current || saved?.currentTurn === false) && saved?.artifactVersions?.length === group.files.length && group.files.every(f => saved.artifactVersions.some(v => v.id === key(f) && String(v.at || 0) === String(f.at || 0) && Number(v.size || 0) === Number(f.size || 0)))) {
         const current = jobs.get(group.id);
         if (!current?.manual) {
           // A local index contains no save receipt. It must not erase a real
