@@ -321,11 +321,15 @@
     // anchor instead of measuring an already-shifted layout as a new baseline.
     if (pendingReadingAnchor?.scroll === scroll && pendingReadingAnchor.list === list &&
         pendingReadingAnchor.current()) return pendingReadingAnchor.anchor;
-    const viewportTop = scroll.getBoundingClientRect().top;
+    const viewport = scroll.getBoundingClientRect();
+    const viewportTop = viewport.top;
+    // A live update below a reader browsing an archive page must not scroll it into view.
+    if (list.previousElementSibling?.classList.contains('nchat-archive') &&
+        list.getBoundingClientRect().top >= viewport.bottom) return null;
     for (const node of list.children) {
       const rect = node.getBoundingClientRect();
       if (rect.height <= 0 || rect.bottom <= viewportTop) continue;
-      return { key: node.getAttribute('data-chat-node') || '',
+      return { key: node.getAttribute('data-chat-node') || '', owner: node.dataset?.messageOwner,
         delta: rect.top - viewportTop, top: scroll.scrollTop };
     }
     return null;
@@ -350,7 +354,8 @@
       readingFrame = 0; pendingReadingAnchor = null;
       if (!current()) return;
       let node = null;
-      if (anchor.key) {
+      if (anchor.owner != null) node = list.querySelector('[data-message-owner="' + anchor.owner + '"]');
+      if (!node && anchor.key) {
         try { node = list.querySelector('[data-chat-node="' + (global.CSS && CSS.escape ? CSS.escape(anchor.key) : anchor.key) + '"]'); }
         catch (_) { node = null; }
       }

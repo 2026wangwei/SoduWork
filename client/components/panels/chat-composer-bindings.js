@@ -159,10 +159,12 @@
     };
   }
   function create(ctx) {
+  let resetHistoryLoad;
   let skillLoading = null, skillLoadingPicker = null, skillRefreshQueued = false;
   const refreshSkills = () => { if (ctx._skillPicker) void _loadChatSkills(true); };
   global.addEventListener?.('soduwork:skills-changed', refreshSkills);
   global.addEventListener?.('soduwork-data-scope-changed', () => {
+    resetHistoryLoad?.();
     ctx._skillLoadSeq++;
     ctx._skillPicker?.setItems([]);
     refreshSkills();
@@ -195,6 +197,7 @@ function _mount() {
         (global.ChatChrome ? ChatChrome.header() : '') +
         '<div class="nchat-content-area">' +
           '<div class="nchat-scroll" id="nchatScroll" tabindex="0">' +
+            '<div class="nchat-history-status" role="status" data-history-status></div>' +
             '<div class="nchat-inner" id="nchatList"></div>' +
             '<div class="nchat-inner nchat-draft">' +
               '<div class="nchat-task-suggest" id="nchatTaskSuggest"></div>' +
@@ -401,7 +404,85 @@ function _pluginConversationContext(ctx) {
   return priorConversationText ? { priorConversationText } : {};
 }
 
+function bindHistoryScroll(el) {
+    const scroll = el.querySelector('#nchatScroll');
+    const status = el.querySelector('[data-history-status]');
+    let pending = null, lastTop = scroll.scrollTop, generation = 0;
+    resetHistoryLoad = () => { generation++; pending = null; status.textContent = ''; };
+    async function loadOlder() {
+      if (scroll.scrollTop > 48 || !ctx._ref || !el.querySelector('[data-load-older]')) return;
+      const ref = ctx._ref, epoch = ctx._viewEpoch, owner = ctx._draftScopeEpoch, version = generation;
+      const current = () => ref === ctx._ref && epoch === ctx._viewEpoch && owner === ctx._draftScopeEpoch &&
+        generation === version && el.isConnected;
+      if (pending?.()) return;
+      const api = ctx._api();
+      if (!api?.snapshot) return;
+      const history = ctx._snap?.history || {};
+      const archive = scroll.querySelector('.nchat-archive');
+      const end = Number(archive?.dataset.historyStart ?? ctx._earliestLiveIndex);
+      const page = Number.isSafeInteger(history.messageEnd) && end > 0 && ctx._openEarlierPage;
+      const nextSize = nextMessageWindowSize(ctx._messageWindowSize);
+      const atLimit = nextSize <= ctx._messageWindowSize;
+      if ((archive || atLimit) && !page) return;
+      pending = current;
+      scroll.__soduworkScrollFollow?.pause?.();
+      const tr = value => global.SoduWorkI18n?.translateText?.(value) || value;
+      status.textContent = tr('正在加载更早记录…');
+      let error = '';
+      try {
+        // Keep one expanded, interactive live window. Older cursor reads must
+        // never rebuild the increasingly large tail the reader already saw.
+        if (archive || atLimit || (page && ctx._messageWindowSize >= 160)) {
+          await page(end, current); return;
+        }
+        let snapshot;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const before = ctx._snap;
+          const got = await api.snapshot(ref, { messageLimit: nextSize, toolLimit: nextSize * 2 });
+          if (!current()) return;
+          if (!got?.ok || !got.snapshot) throw Error(got?.reason);
+          if (ctx._snap === before) { snapshot = got.snapshot; break; }
+          // Prefer a newer publication if it already covers the expanded window.
+          if (ctx._snap?.history?.messageLimit >= nextSize) { snapshot = ctx._snap; break; }
+        }
+        if (!snapshot) throw Error(tr('更早的对话暂时加载失败，请稍后重试'));
+        if (page && snapshot.history?.messageStart === end && ctx._messageWindowSize >= ctx._snap.messages.length) {
+          await page(end, current); return;
+        }
+        const bounds = scroll.getBoundingClientRect();
+        const anchor = scroll.__soduworkScrollFollow?.follow ? null : [...el.querySelectorAll('#nchatList > [data-message-owner]')]
+          .find(node => node.getBoundingClientRect().bottom > bounds.top);
+        const offset = anchor?.getBoundingClientRect().top, messageOwner = anchor?.dataset.messageOwner;
+        ctx._messageWindowSize = nextSize; ctx._snap = snapshot; ctx._render();
+        if (messageOwner != null) {
+          const same = el.querySelector('#nchatList > [data-message-owner="' + messageOwner + '"]');
+          if (same) scroll.scrollTop += same.getBoundingClientRect().top - offset;
+        }
+      } catch {
+        error = tr('更早的对话暂时加载失败，请稍后重试');
+      } finally {
+        if (pending === current) {
+          pending = null;
+          status.textContent = current() ? error : '';
+        }
+      }
+    }
+    scroll.addEventListener('scroll', () => {
+      const up = lastTop > 48 && scroll.scrollTop <= 48;
+      lastTop = scroll.scrollTop;
+      if (up && !scroll.__soduworkScrollFollow?.follow) void loadOlder();
+    }, { passive: true });
+    // At the boundary a wheel or Home key may produce no scroll event.
+    scroll.addEventListener('wheel', event => {
+      if (!event.ctrlKey && event.deltaY < 0) { lastTop = scroll.scrollTop; void loadOlder(); }
+    }, { passive: true });
+    scroll.addEventListener('keydown', event => {
+      if (event.target === scroll && ['Home', 'PageUp', 'ArrowUp'].includes(event.key)) void loadOlder();
+    });
+  }
+
 function _bind(el) {
+    bindHistoryScroll(el);
     const input = el.querySelector('#nchatInput');
     if (global.ComposeSkills) {
       ctx._skillPicker = ComposeSkills.create({
@@ -637,6 +718,73 @@ function _bind(el) {
       if (!e.target.matches('[data-chat-app]') || !['Enter', ' '].includes(e.key)) return;
       e.preventDefault(); e.target.click();
     });
+    function handleMessageContent(e) {
+      const attachmentImage = e.target.closest('[data-catt-message-image]');
+      if (attachmentImage) {
+        if (global.ConversationAttachments && typeof ConversationAttachments.openMessageImage === 'function') {
+          ConversationAttachments.openMessageImage(attachmentImage, {
+            ref: ctx._ref, api: ctx._api(), say: typeof petSay === 'function' ? petSay : null,
+          });
+        }
+        return true;
+      }
+      const copyMessage = e.target.closest('[data-copy-message]');
+      if (copyMessage) {
+        const afterBlock = Number(copyMessage.getAttribute('data-copy-after-block') ?? -1);
+        const sources = Array.from(copyMessage.closest('.nmsg.ai')?.querySelectorAll('.ntext .nmd') || [])
+          .filter(source => afterBlock < 0 || Number(source.closest('.ntext')?.dataset.block) > afterBlock);
+        const value = sources.length ? sources.map(source => source.innerText).join('\n\n') : (copyMessage.getAttribute('data-copy-message') || '');
+        const html = sources.map(source => source.innerHTML).join('<br><br>');
+        copyMessage.disabled = true;
+        (async () => {
+          let ok = false;
+          try {
+            if (html && navigator.clipboard?.write && global.ClipboardItem) {
+              await navigator.clipboard.write([new ClipboardItem({
+                'text/html': new Blob([html], { type: 'text/html' }),
+                'text/plain': new Blob([value], { type: 'text/plain' }),
+              })]);
+              ok = true;
+            } else if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); ok = true; }
+          } catch (_) {}
+          if (!ok) {
+            try {
+              const area = document.createElement('textarea'); area.value = value; area.setAttribute('readonly', '');
+              area.style.cssText = 'position:fixed;opacity:0;pointer-events:none'; document.body.appendChild(area);
+              area.select(); ok = document.execCommand('copy'); area.remove();
+            } catch (_) {}
+          }
+          copyMessage.disabled = false;
+          copyMessage.classList.toggle('is-copied', ok);
+          copyMessage.setAttribute('aria-label', ok ? '已复制' : '复制失败');
+          copyMessage.title = ok ? '已复制' : '复制失败';
+          if (ok) setTimeout(() => { if (copyMessage.isConnected) { copyMessage.classList.remove('is-copied'); copyMessage.title = '\u590d\u5236\u5185\u5bb9'; copyMessage.setAttribute('aria-label', copyMessage.title); } }, 1200);
+          if (!ok && typeof petSay === 'function') petSay('暂时没能复制，请选中文字后按 Ctrl+C');
+        })();
+        return true;
+      }
+      return false;
+    }
+    function openMarkdownLink(e) {
+      const link = e.target.closest('.nmd a[href]');
+      if (link) {
+        e.preventDefault();
+        const href = link.getAttribute('href') || '';
+        const opened = global.ChatWorkbench && typeof ChatWorkbench.openLink === 'function'
+          ? ChatWorkbench.openLink(href, { source: link }) : false;
+        if (!opened && /^https?:\/\//i.test(href) && global.soduWorkAPI &&
+            typeof global.soduWorkAPI.openExternal === 'function') {
+          global.soduWorkAPI.openExternal(href);
+        }
+        return true;
+      }
+      return false;
+    }
+    // Archived pages expose reading actions. Live task and session commands
+    // stay delegated to the active message list.
+    el.querySelector('#nchatScroll').addEventListener('click', event => {
+      if (event.target.closest('.nchat-archive') && !handleMessageContent(event)) openMarkdownLink(event);
+    });
     el.querySelector('#nchatList').addEventListener('click', (e) => {
       const crewAnchor = e.target.closest('[data-crew-run]');
       if (crewAnchor) {
@@ -674,95 +822,7 @@ function _bind(el) {
         }
         return;
       }
-      const attachmentImage = e.target.closest('[data-catt-message-image]');
-      if (attachmentImage) {
-        if (global.ConversationAttachments && typeof ConversationAttachments.openMessageImage === 'function') {
-          ConversationAttachments.openMessageImage(attachmentImage, {
-            ref: ctx._ref, api: ctx._api(), say: typeof petSay === 'function' ? petSay : null,
-          });
-        }
-        return;
-      }
-      const copyMessage = e.target.closest('[data-copy-message]');
-      if (copyMessage) {
-        const afterBlock = Number(copyMessage.getAttribute('data-copy-after-block') ?? -1);
-        const sources = Array.from(copyMessage.closest('.nmsg.ai')?.querySelectorAll('.ntext .nmd') || [])
-          .filter(source => afterBlock < 0 || Number(source.closest('.ntext')?.dataset.block) > afterBlock);
-        const value = sources.length ? sources.map(source => source.innerText).join('\n\n') : (copyMessage.getAttribute('data-copy-message') || '');
-        const html = sources.map(source => source.innerHTML).join('<br><br>');
-        copyMessage.disabled = true;
-        (async () => {
-          let ok = false;
-          try {
-            if (html && navigator.clipboard?.write && global.ClipboardItem) {
-              await navigator.clipboard.write([new ClipboardItem({
-                'text/html': new Blob([html], { type: 'text/html' }),
-                'text/plain': new Blob([value], { type: 'text/plain' }),
-              })]);
-              ok = true;
-            } else if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); ok = true; }
-          } catch (_) {}
-          if (!ok) {
-            try {
-              const area = document.createElement('textarea'); area.value = value; area.setAttribute('readonly', '');
-              area.style.cssText = 'position:fixed;opacity:0;pointer-events:none'; document.body.appendChild(area);
-              area.select(); ok = document.execCommand('copy'); area.remove();
-            } catch (_) {}
-          }
-          copyMessage.disabled = false;
-          copyMessage.classList.toggle('is-copied', ok);
-          copyMessage.setAttribute('aria-label', ok ? '已复制' : '复制失败');
-          copyMessage.title = ok ? '已复制' : '复制失败';
-          if (ok) setTimeout(() => { if (copyMessage.isConnected) { copyMessage.classList.remove('is-copied'); copyMessage.title = '\u590d\u5236\u5185\u5bb9'; copyMessage.setAttribute('aria-label', copyMessage.title); } }, 1200);
-          if (!ok && typeof petSay === 'function') petSay('暂时没能复制，请选中文字后按 Ctrl+C');
-        })();
-        return;
-      }
-      const older = e.target.closest('[data-load-older]');
-      if (older) {
-        if (ctx._loadingOlder || !ctx._ref) return;
-        const api = ctx._api(); if (!api || typeof api.snapshot !== 'function') return;
-        const scroll = el.querySelector('#nchatScroll'); const height = scroll ? scroll.scrollHeight : 0;
-        const top = scroll ? scroll.scrollTop : 0; const requestedRef = ctx._ref;
-        const epoch = ctx._viewEpoch, owner = ctx._draftScopeEpoch;
-        const current = () => requestedRef === ctx._ref && epoch === ctx._viewEpoch && owner === ctx._draftScopeEpoch;
-        const history = ctx._snap?.history || {};
-        const pageEarlier = Number.isSafeInteger(history.messageEnd) && history.messageStart > 0 && ctx._openEarlierPage;
-        const nextSize = nextMessageWindowSize(ctx._messageWindowSize);
-        if (nextSize <= Number(ctx._messageWindowSize)) {
-          if (pageEarlier) { void pageEarlier(history.messageStart); return; }
-          older.disabled = true; older.textContent = '已显示最近 2000 条消息'; return;
-        }
-        const previousText = older.textContent;
-        ctx._loadingOlder = true; older.disabled = true; older.textContent = '\u6b63\u5728\u52a0\u8f7d\u66f4\u65e9\u8bb0\u5f55\u2026';
-        async function readOlder() {
-          let snapshot;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const before = ctx._snap;
-            const got = await api.snapshot(requestedRef, { messageLimit: nextSize, toolLimit: nextSize * 2 });
-            if (!current()) return;
-            if (!got?.ok || !got.snapshot) throw Error(got?.reason);
-            if (ctx._snap === before) { snapshot = got.snapshot; break; }
-            // A newer live publication owns the current reply and execution state.
-            if (ctx._snap?.history?.messageLimit >= nextSize) { snapshot = ctx._snap; break; }
-          }
-          if (!snapshot) throw Error('更早的对话暂时加载失败，请稍后重试');
-          // A byte-bounded device preview can reach its limit before 2000.
-          if (pageEarlier && snapshot.history?.messageStart === history.messageStart &&
-              ctx._messageWindowSize >= ctx._snap.messages.length) {
-            return pageEarlier(history.messageStart);
-          }
-          ctx._messageWindowSize = nextSize; ctx._snap = snapshot; ctx._render();
-          if (scroll) requestAnimationFrame(() => { if (current()) scroll.scrollTop = top + scroll.scrollHeight - height; });
-        }
-        readOlder().catch(() => { if (current() && typeof petSay === 'function') petSay('更早的对话暂时加载失败，请稍后重试'); })
-          .finally(() => {
-            if (!current()) return;
-            ctx._loadingOlder = false;
-            if (older.disabled) { older.disabled = false; older.textContent = previousText; }
-          });
-        return;
-      }
+      if (handleMessageContent(e)) return;
       const appCard = e.target.closest('[data-chat-app]');
       if (appCard && e.target.closest('.appsx-set')) {
         void global.SoduWorkApps.settingsById(appCard.dataset.chatApp)
@@ -810,18 +870,7 @@ function _bind(el) {
         ctx._goalAction(goalAction.getAttribute('data-goal-action'));
         return;
       }
-      const link = e.target.closest('.nmd a[href]');
-      if (link) {
-        e.preventDefault();
-        const href = link.getAttribute('href') || '';
-        const opened = global.ChatWorkbench && typeof ChatWorkbench.openLink === 'function'
-          ? ChatWorkbench.openLink(href, { source: link }) : false;
-        if (!opened && /^https?:\/\//i.test(href) && global.soduWorkAPI &&
-            typeof global.soduWorkAPI.openExternal === 'function') {
-          global.soduWorkAPI.openExternal(href);
-        }
-        return;
-      }
+      if (openMarkdownLink(e)) return;
       const deliveryAction = e.target.closest('[data-delivery-export-version],[data-delivery-reveal],[data-delivery-archive],[data-delivery-retry],[data-delivery-local],[data-cloud-artifact-url]');
       if (deliveryAction) { void global.ChatDeliveries?.handle(deliveryAction, ctx._api(), ctx._ref); return; }
       const librarySave = e.target.closest('[data-library-output]');
