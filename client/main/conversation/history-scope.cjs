@@ -38,6 +38,7 @@ async function ownerStamp(app) {
       if (++inspected % 100 === 0) await new Promise(resolve => setImmediate(resolve));
     }
   }
+  hash.update(require('./legacy-history-receipts.cjs').forApp(app).revision());
   return { stamp: hash.digest('hex'), entries };
 }
 async function ownerEvidence(app, entries) {
