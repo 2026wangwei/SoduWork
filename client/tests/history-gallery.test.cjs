@@ -86,6 +86,69 @@ test('an unrelated receipt claiming the same message boundary defers to the full
   assert.ok((await runtime.viewSnapshotAsync(view)).items.some(item => item.relative === 'shared.png' && item.versionId));
 });
 
+test('a historical Pi boundary overrides a submission ID reused by a later gallery', async t => {
+  const f = await fixture(t);
+  f.snapshot.messages[0].submissionId = 'journal-A';
+  await f.deliver('pi-history:first', 0, { 'unrelated.md': '# First turn' });
+  await f.deliver('journal-A', 2, { 'shared.png': 'second turn only' });
+  const { view, files } = await f.open('reused-submission', 'revision');
+  const full = runtime.decorate(view.ref, await runtime.viewSnapshotAsync(view), view);
+  const select = (index, messageIndex) => links.filesForTurn(index, links.deliveryTurns(f.snapshot, index)[messageIndex], messageIndex === 3)
+    .filter(file => file.relative === 'shared.png').map(file => file.artifactId);
+  assert.equal(links.deliveryTurns(f.snapshot, full)[1], 'pi-history:first');
+  assert.deepEqual(select(full, 1), []);
+  assert.deepEqual(select(files, 1), select(full, 1));
+  assert.equal(select(full, 3).length, 1);
+  assert.deepEqual(files, []);
+});
+
+test('a missing Pi screenshot cannot determine the gallery boundary from metadata alone', async t => {
+  const f = await fixture(t);
+  f.snapshot.messages[0].submissionId = 'journal-A';
+  await f.deliver('pi-history:first', 0, { 'unrelated.md': '# First turn', 'missing.png': 'prior proof' });
+  await f.deliver('journal-A', 2, { 'shared.png': 'second turn only' });
+  const first = await f.open('before-removal', 'revision');
+  const firstImage = first.files.find(file => file.versionId && file.relative === 'missing.png');
+  fs.unlinkSync((await first.read(firstImage.artifactId)).path);
+  const { view, files } = await f.open('after-removal', 'revision');
+  assert.deepEqual(files, []);
+  const full = runtime.decorate(view.ref, await runtime.viewSnapshotAsync(view), view);
+  assert.equal(links.deliveryTurns(f.snapshot, full)[1], 'pi-history:first');
+  assert.deepEqual(links.filesForTurn(full, 'pi-history:first', false).filter(file => file.relative === 'shared.png'), []);
+});
+
+test('slow gallery proof releases the opening view and stops before checking the next receipt', async t => {
+  const f = await fixture(t);
+  await f.deliver('one', 0, { 'shared.png': 'first picture', 'missing.png': 'second picture' });
+  let start, resume, finish;
+  const started = new Promise(resolve => { start = resolve; });
+  const blocked = new Promise(resolve => { resume = resolve; });
+  const finished = new Promise(resolve => { finish = resolve; });
+  const prove = storage.restoredStamp, readers = versions.readers;
+  const proof = t.mock.method(storage, 'restoredStamp', async (...args) => {
+    start();
+    await blocked;
+    return prove(...args);
+  });
+  t.mock.method(versions, 'readers', async (...args) => {
+    try { return await readers(...args); }
+    finally { finish(); }
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const opening = f.open('slow', 'revision');
+  await started;
+  t.mock.timers.tick(250);
+  const { view, files } = await opening;
+  assert.deepEqual(files, []);
+  resume();
+  await finished;
+  assert.equal(proof.mock.callCount(), 1);
+  const full = await runtime.viewSnapshotAsync(view);
+  assert.equal(full.items.filter(file => file.versionId).length, 2);
+  const fast = await f.open('fast', 'revision');
+  assert.equal(fast.files.filter(file => file.versionId).length, 2);
+});
+
 test('a fresh view can reuse encoded bytes only after verifying its principal, revision and file', async t => {
   const f = await fixture(t);
   await f.deliver('one', 0, { 'shared.png': 'archived image' });
