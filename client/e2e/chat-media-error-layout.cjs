@@ -47,7 +47,10 @@ if (typeof electron === 'string') {
         link.href = ${JSON.stringify(pathToFileURL(path.join(client, file)).href)};
         link.onload = resolve; link.onerror = () => reject(Error('Stylesheet failed')); document.head.append(link); })`);
     }
-    for (const file of ['chat-media.js', 'chat-output-links.js', 'chat-dom-patch.js']) {
+    for (const file of ['vendor/markdown/marked.umd.js', 'core/markdown.js', 'vendor/markdown/purify.min.js']) {
+      await run(fs.readFileSync(path.join(client, file), 'utf8') + '\nvoid 0;');
+    }
+    for (const file of ['chat-media.js', 'chat-markdown.js', 'chat-output-links.js', 'chat-dom-patch.js']) {
       await run(fs.readFileSync(path.join(client, 'components/panels', file), 'utf8') + '\nvoid 0;');
     }
     const png = (width, height) => nativeImage.createFromBitmap(Buffer.alloc(width * height * 4, 255), { width, height }).toPNG().toString('base64');
@@ -149,20 +152,23 @@ if (typeof electron === 'string') {
         ...['shots/menu.png', 'shots/fight.png', 'other/lost.png', 'old/ko.png', 'old/ko.png'].map((relative, i) =>
           ({ artifactId: 's' + i, relative, name: relative.split('/').pop(), primary: false, processEvidence: true }))
       ];
-      window.paintHistory = (files, urls, historyImagesLoading = false, messages = []) => {
-        const md = '<div class="nmd"><p>Open <code>index.html</code></p><pre><code class="language-soduwork-media">' +
-          JSON.stringify({ type: 'gallery', items: urls.map(url => ({ url })) }) + '</code></pre></div>';
+      window.historyMarkdown = ChatMarkdown.create({ _ref: 'history' });
+      window.paintHistory = (files, urls, historyImagesLoading = false, messages = [], legacy = false) => {
+        const fence = ${JSON.stringify('```')};
+        const markdown = [${JSON.stringify('Open `index.html`')}, legacy ? 'soduwork-media' + fence + 'json' : fence + 'soduwork-media',
+          JSON.stringify({ type: 'gallery', items: urls.map(url => ({ url })) }), fence, '', '**Checks**'].join('\\n');
         list.innerHTML = ChatOutputLinks.decorate('<div class="nmsg ai" data-chat-node="message:1" data-output-task="" data-delivery-final="true">' +
-          ChatMedia.prepare(md, 'history') + '</div>', files, 'history', { localReplica: true, status: 'idle', historyImagesLoading, messages });
+          historyMarkdown.rich(markdown) + '</div>', files, 'history', { localReplica: true, status: 'idle', historyImagesLoading, messages });
       };
       window.historyReads = [];
-      paintHistory(historyFiles, ['shots/menu.png', './shots/fight.png', 'shots/lost.png', 'old/ko.png']);
+      paintHistory(historyFiles, ['shots/menu.png', './shots/fight.png', 'shots/lost.png', 'old/ko.png'], false, [], true);
       ChatMedia.hydrate(list);
       ChatOutputLinks.hydrateImages(list, historyFiles, { ref: 'history', api: { artifactAction: async (...args) => {
         historyReads.push(args);
         return { ok: true, mimeType: 'image/png', data: ${JSON.stringify(png(48, 32))} };
       } } });
     `);
+    assert.equal(await run(`list.querySelector('.nmd strong')?.textContent`), 'Checks');
     assert.deepEqual(await run(`[...list.querySelectorAll('.nmd [data-output-image]')].map(n => n.dataset.outputImage)`), ['s0', 's1']);
     await until('list.querySelectorAll(".nmd img").length === 2 && [...list.querySelectorAll(".nmd img")].every(n => n.naturalWidth === 48)');
     assert.deepEqual(await run('historyReads'), [['history', 's0', 'image-full'], ['history', 's1', 'image-full']]);

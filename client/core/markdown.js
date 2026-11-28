@@ -9,6 +9,21 @@
   const punctuation = /\p{P}/u;
   const cjkStrongEnd = /[^\x00-\x7f](?=\*{2}(?!\*)[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])/gu;
   marked.use({
+    extensions: [{
+      name: 'legacyMediaFence', level: 'block',
+      start(src) {
+        // The next blank line already ends the current paragraph.
+        const end = src.indexOf('\n\n');
+        const marker = /\n {0,3}soduwork-media[ \t]*```json\b/.exec(end < 0 ? src : src.slice(0, end));
+        return marker ? marker.index + 1 : undefined;
+      },
+      tokenizer(src) {
+        // Some saved replies joined the media label to the JSON opening fence.
+        // Consume its closing fence here so the rest of the reply stays Markdown.
+        const block = /^ {0,3}soduwork-media[ \t]*```json[ \t]*(?:\n|(?=\{))([\s\S]*?)\n {0,3}```[ \t]*(?:\n|$)/.exec(src);
+        if (block) return { type: 'code', raw: block[0], lang: 'soduwork-media', text: block[1] };
+      },
+    }],
     hooks: {
       emStrongMask(maskedSrc) {
         // Adjust delimiter classification only in Marked's masked scan. Code,

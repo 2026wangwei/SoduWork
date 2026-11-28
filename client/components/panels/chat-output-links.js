@@ -710,6 +710,60 @@
     }
     return { type: value.type, paths };
   }
+  function localImageGroup(message, declaration, available, ref, historyMedia, historyImagesLoading, shown) {
+    const doc = message.ownerDocument;
+    // A basename is not proof that a screenshot belongs to this gallery.
+    const entries = declaration.paths.map(relative => {
+      const images = available.filter(file => file.artifactId && !file.deleted && isImage(file));
+      if (/^(?:[a-z]:)?\//i.test(relative)) {
+        return workspaceFileTarget(relative, images);
+      }
+      const originals = images.filter(file => !file.previewOf && file.relative === relative);
+      const captured = originals.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn);
+      if (captured.length) return captured.length === 1 ? captured[0] : null;
+      const previews = images.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn && file.previewOf === relative);
+      if (previews.length) return previews.length === 1 ? previews[0] : null;
+      // Some archived replies named the delivered HTML in an image declaration.
+      // Without a recorded screenshot, the verified page can still open in the workbench.
+      if (historyMedia && /\.html?$/i.test(relative)) {
+        const page = workspaceFileTarget(relative, available);
+        if (page?.versionId && !page.deleted && (page.turnId === message.dataset.deliveryTurn ||
+            (message.dataset.deliveryArchiveIds || '').split(' ').includes(key(page)))) return page;
+      }
+      return originals.length === 1 ? originals[0] : null;
+    });
+    if (!historyMedia && entries.every(file => !file)) return null;
+    const group = doc.createElement('div');
+    group.className = 'noutput-gallery nmedia-group';
+    if (declaration.type === 'gallery' && entries.length > 1) group.classList.add('nmedia-grid');
+    group.dataset.chatMedia = JSON.stringify([ref, global.SoduWorkAPI?.taskStorageKey?.('ops'), declaration.paths,
+      entries.map(file => file ? [key(file), file.at, file.size] : historyImagesLoading ? 'loading' : null)]);
+    entries.forEach((file, i) => {
+      if (file && !isImage(file)) {
+        group.append(button(doc, file, declaration.paths[i]));
+        return;
+      }
+      if (file) {
+        const preview = declaration.type === 'image' && shown.has(key(file)) ? button(doc, file, file.name) : imageCard(doc, file, ref);
+        shown.add(key(file));
+        group.append(preview);
+        if (file.previewOf) {
+          const caption = doc.createElement('small');
+          caption.textContent = (global.SoduWorkI18n?.translateText?.('执行时预览') || '执行时预览') + ' · ' + file.name;
+          group.append(caption);
+        }
+      } else {
+        const missing = doc.createElement('span');
+        missing.className = 'noutput-image-missing'; missing.setAttribute('role', 'status');
+        const label = historyImagesLoading ? '正在读取图片…' : '图片暂时无法预览';
+        const path = declaration.paths[i];
+        const name = /^(?:[a-z]:)?\//i.test(path) ? path.split('/').pop() : path;
+        missing.textContent = (global.SoduWorkI18n?.translateText?.(label) || label) + ' · ' + name;
+        group.append(missing);
+      }
+    });
+    return group;
+  }
   function inlineImages(root, files, ref, historyMedia, historyImagesLoading = false) {
     files = asFiles(files);
     const doc = root.ownerDocument, shown = new Set([...root.querySelectorAll('[data-output-image],[data-delivery-preview]')]
@@ -732,56 +786,8 @@
         message.querySelectorAll('.nmd pre > code, .nmd [data-local-media-declaration]').forEach(code => {
           const declaration = localImageDeclaration(code);
           if (!declaration) return;
-          // A basename is not proof that a screenshot belongs to this gallery.
-          const entries = declaration.paths.map(relative => {
-            const images = available.filter(file => file.artifactId && !file.deleted && isImage(file));
-            if (/^(?:[a-z]:)?\//i.test(relative)) {
-              return workspaceFileTarget(relative, images);
-            }
-            const originals = images.filter(file => !file.previewOf && file.relative === relative);
-            const captured = originals.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn);
-            if (captured.length) return captured.length === 1 ? captured[0] : null;
-            const previews = images.filter(file => file.versionId && file.turnId === message.dataset.deliveryTurn && file.previewOf === relative);
-            if (previews.length) return previews.length === 1 ? previews[0] : null;
-            // Some archived replies named the delivered HTML in an image declaration.
-            // Without a recorded screenshot, the verified page can still open in the workbench.
-            if (historyMedia && /\.html?$/i.test(relative)) {
-              const page = workspaceFileTarget(relative, available);
-              if (page?.versionId && !page.deleted && (page.turnId === message.dataset.deliveryTurn ||
-                  (message.dataset.deliveryArchiveIds || '').split(' ').includes(key(page)))) return page;
-            }
-            return originals.length === 1 ? originals[0] : null;
-          });
-          if (!historyMedia && entries.every(file => !file)) return;
-          const group = doc.createElement('div');
-          group.className = 'noutput-gallery nmedia-group';
-          if (declaration.type === 'gallery' && entries.length > 1) group.classList.add('nmedia-grid');
-          group.dataset.chatMedia = JSON.stringify([ref, global.SoduWorkAPI?.taskStorageKey?.('ops'), declaration.paths,
-            entries.map(file => file ? [key(file), file.at, file.size] : historyImagesLoading ? 'loading' : null)]);
-          entries.forEach((file, i) => {
-            if (file && !isImage(file)) {
-              group.append(button(doc, file, declaration.paths[i]));
-              return;
-            }
-            if (file) {
-              const preview = declaration.type === 'image' && shown.has(key(file)) ? button(doc, file, file.name) : imageCard(doc, file, ref);
-              shown.add(key(file));
-              group.append(preview);
-              if (file.previewOf) {
-                const caption = doc.createElement('small');
-                caption.textContent = (global.SoduWorkI18n?.translateText?.('执行时预览') || '执行时预览') + ' · ' + file.name;
-                group.append(caption);
-              }
-            } else {
-              const missing = doc.createElement('span');
-              missing.className = 'noutput-image-missing'; missing.setAttribute('role', 'status');
-              const label = historyImagesLoading ? '正在读取图片…' : '图片暂时无法预览';
-              const path = declaration.paths[i];
-              const name = /^(?:[a-z]:)?\//i.test(path) ? path.split('/').pop() : path;
-              missing.textContent = (global.SoduWorkI18n?.translateText?.(label) || label) + ' · ' + name;
-              group.append(missing);
-            }
-          });
+          const group = localImageGroup(message, declaration, available, ref, historyMedia, historyImagesLoading, shown);
+          if (!group) return;
           (code.hasAttribute('data-local-media-declaration') ? code : code.parentElement).replaceWith(group);
         });
       }
@@ -1240,7 +1246,7 @@
   // and the WeakMap drops entries for replaced nodes on its own.
   function resetDecorateCache() { decorateMemo = null; }
   const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,taskOutputId,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
-    isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,
+    isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,localImageDeclaration,localImageGroup,
     isPluginDraft,pluginDrafts,_supersededDraftCard:supersededDraftCard,_claimInlineMedia:claimInlineMedia,
     _buildLinkIndex:buildLinkIndex,_decorateStateSignature:decorateStateSignature,resetDecorateCache};
   global.ChatOutputLinks=api;
