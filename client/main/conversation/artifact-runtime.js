@@ -158,7 +158,7 @@ function retainGalleryImage(key, encoded) {
 async function turnArtifacts(session, requestedId) {
   if (!turnArchives.has(archiveSource(session))) return [];
   const versions = [], checked = new Set();
-  for (const group of await turnArchives.get(archiveSource(session))()) {
+  for (const group of await turnArchives.get(archiveSource(session))(requestedId)) {
     if (!checked.has(group.reader.authorize)) { await group.reader.authorize(); checked.add(group.reader.authorize); }
     versions.push(...versionItems(group, requestedId));
   }

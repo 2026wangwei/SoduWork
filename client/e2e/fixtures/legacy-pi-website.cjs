@@ -54,6 +54,11 @@ async function create(app, root, sessions, screenshots = []) {
     await store.saveConversationTranscript(row.id, snapshot.messages, guard);
     return snapshot;
   }
+  async function createDeliverables() {
+    const files = require('./legacy-pi-deliverables.cjs')(root, fileRoot, owner, creator);
+    for (const legacy of [files.siteRow, files.sheetRow]) await saveLegacy(legacy);
+    return files;
+  }
   const row = websiteArchive(randomUUID(), path.join(root, 'temp', 'chat-abcdef-1111'), oldHeading, sendAt, screenshots);
   await saveLegacy(row);
   const currentDir = path.join(root, 'temp', 'chat-abcdef-2222');
@@ -103,7 +108,7 @@ async function create(app, root, sessions, screenshots = []) {
   await segments.save(app, { version: 1, id: logicalId, owner, originAdapter: 'pi', cwd: active.cwd,
     deviceHistoryComplete: true, segments: [part(retired)], active: part(active), prefix, at: Date.now() });
   await saveLegacy({ ...active, id: logicalId, runtimeConversationId: logicalId });
-  return { id: row.id, cwd: row.cwd, retiredId: logicalId, oldHeading, newHeading, continued,
+  return { id: row.id, cwd: row.cwd, retiredId: logicalId, oldHeading, newHeading, continued, createDeliverables,
     preview: id => history.open(id, { historyPreview: true, allowContinuation: true }), close: () => history.close() };
 }
 module.exports = { create };

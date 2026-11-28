@@ -398,25 +398,29 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
   }
   function bindTurnArtifacts(handle, getId, captured, current) {
     const runtime = require('./artifact-runtime');
-    let lastDigest, readers;
-    runtime.bindTurnArchives(handle, async () => {
+    let lastDigest, readers, draftIds = new Set();
+    runtime.bindTurnArchives(handle, async requestedId => {
       current();
       const id = getId();
       if (!id) return [];
       scoped.guard(captured);
       const version = await store.deviceHistoryVersion(id);
       if (!version) return [];
-      if (version === lastDigest) return readers;
+      if (version === lastDigest && !draftIds.has(requestedId)) return readers;
       const row = await resolve(id, captured), content = await store.deviceHistory(id);
       if (content?.digest !== version || !row) return [];
       const guards = artifactGuards(row, content, captured, current);
       if (!guards) return [];
+      const archive = content.localArtifactHistory.archive;
+      const priorIds = new Set((archive?.versions || []).filter(file => file.piEditDraft === 'original').map(file => 'version:' + file.versionId));
       const result = await require('./artifact-versions.cjs').readers(app.getPath('userData'), row.id,
-        content.localArtifactHistory.archive, guards.guard, guards.authorize);
+        archive, guards.guard, guards.authorize, requestedId);
       for (const { reader } of result) reader.deliveryLink = guards.deliveryLink;
       current();
       scoped.guard(captured);
+      if (priorIds.has(requestedId)) return result;
       lastDigest = version;
+      draftIds = priorIds;
       readers = result;
       return readers;
     });

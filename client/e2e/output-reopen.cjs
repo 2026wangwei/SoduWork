@@ -116,12 +116,14 @@ if (typeof electron === 'string') {
     }));
     legacyHistory = await require('./fixtures/legacy-pi-website.cjs').create(app, root, sessions, screenshots);
     const legacyId = legacyHistory.id;
+    const { siteRow, sheetRow, site, excel, bytes, heading } = await legacyHistory.createDeliverables();
+    const legacyIds = new Set([legacyId, legacyHistory.retiredId, siteRow.id, sheetRow.id]);
     let continuation;
     ipcMain.handle('pi-session-open-application', () => ({ ok: true, handled: false }));
     ipcMain.handle('access-preferences-get', () => ({ ok: true, mode: 'standard' }));
     ipcMain.handle('pi-session-runtimes', () => ({ ok: true, runtimes: catalog.runtimes() }));
     ipcMain.handle('pi-session-open', async (_event, options) => {
-      if (![legacyId, legacyHistory.retiredId].includes(options.chatId)) return restore(options.adapterId || 'pi');
+      if (!legacyIds.has(options.chatId)) return restore(options.adapterId || 'pi');
       const view = options.chatId === legacyId && continuation
         ? await legacyHistory.continued(continuation === 'collision') : await legacyHistory.preview(options.chatId);
       sessions.set(view.ref, view);
@@ -297,6 +299,33 @@ if (typeof electron === 'string') {
     }
     report.cases.push('Four archived screenshots decode before the full index on cold open and after switching to another chat and back. Its arrival leaves one website card.');
     report.cases.push('Pi 1.13.19 archive: full permission remains selected and available; click the historical HTML filename, reopen the chat, click its delivery card and verify the original heading in the right WebContentsView');
+    const filenameLink = name => 'Array.from(document.querySelectorAll(".nmsg.ai .ntext [data-open-app]")).find(link => link.textContent === ' + JSON.stringify(name) + ')';
+    const matchingCards = name => 'Array.from(document.querySelectorAll(".ndelivery-heading [data-open-app]"))' +
+      '.filter(button => button.dataset.openApp === (' + filenameLink(name) + ')?.dataset.openApp)';
+    await enter(siteRow.id);
+    await until(() => js(matchingCards(site) + '.length === 1'));
+    await click(filenameLink(site));
+    await website(heading);
+    await reset();
+
+    await enter(sheetRow.id);
+    await until(() => js(matchingCards(excel) + '.length === 1'));
+    // Intercept the operating-system handoff so the real click can be verified
+    // against the archived workbook without launching a browser or Office.
+    const originalOpen = electron.shell.openExternal;
+    let workbookUrl;
+    try {
+      electron.shell.openExternal = async url => { workbookUrl = url; };
+      await click(matchingCards(excel) + '[0]');
+      await until(() => Boolean(workbookUrl));
+      const url = new URL(workbookUrl);
+      assert.equal(url.hostname, '127.0.0.1');
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    } finally { electron.shell.openExternal = originalOpen; }
+    await reset();
+    report.cases.push('Historical .htm and .xlsx: click the edited site and original workbook from the reopened replies and verify the final heading and file bytes.');
     for (const scenario of ['empty', 'collision', 'retired']) {
       continuation = scenario;
       await enter(scenario === 'retired' ? legacyHistory.retiredId : legacyId);
