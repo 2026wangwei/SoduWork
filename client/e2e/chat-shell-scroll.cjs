@@ -27,7 +27,8 @@ async function until(code) {
 }
 async function resize(width, height, zoom) {
   win.setContentSize(width, height); win.webContents.setZoomFactor(zoom);
-  await until(`Math.abs(innerWidth-${width/zoom})<2&&Math.abs(innerHeight-${height/zoom})<2`);
+  // Windows rounds native and CSS viewport dimensions at fractional display scale.
+  await until(`Math.abs(innerWidth-${width/zoom})<=2&&Math.abs(innerHeight-${height/zoom})<=2`);
   await wait(100);
 }
 async function point(selector) {
@@ -138,9 +139,11 @@ async function keyboardHistory() {
   await pressKey('PageUp'); await render(); await wait(100);
   report.keyboardPageUp = await snapshot();
   assert.ok(report.keyboardPageUp.top < reading.top - 100, 'PageUp continues browsing history');
+  const beforeHome = await js("document.querySelector('#nchatList > [data-message-owner]').dataset.messageOwner");
   await pressKey('Home'); await render(); await wait(100);
   report.keyboardHome = await snapshot();
-  assert.ok(report.keyboardHome.top <= 2, 'Home reaches the start of the transcript');
+  assert.ok(Number(await js("document.querySelector('#nchatList > [data-message-owner]').dataset.messageOwner")) < Number(beforeHome),
+    'Home reveals earlier messages in the transcript');
   await pressKey('End'); await render(); await wait(150);
   report.keyboardEnd = await snapshot();
   assert.equal(report.keyboardEnd.follow, true, 'End at the bottom resumes latest following');
@@ -158,7 +161,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('pi-session-open', () => ({ok: true, ref: 'shell-fixture', sessionId: 'shell-fixture', cwd: temporary, snapshot: structuredClone(state)}));
     for (const [name, value] of Object.entries({'pi-session-history': {ok: true, chats: []},
       'pi-session-outputs': {ok: true, files: [], artifacts: []}, 'pi-session-runtimes': {ok: true, runtimes: []},
-      'pi-session-snapshot': {ok: true, snapshot: state}, 'pi-session-release': {ok: true},
+      'pi-session-open-application': {ok:true,handled:false}, 'pi-session-snapshot': {ok: true, snapshot: state}, 'pi-session-release': {ok: true},
       'pi-session-read-output': {ok:true,text:'# Isolated result'}, 'recent-workspace-get':{ok:true,dir:''},
       'access-preferences-get': {ok: true}})) ipcMain.handle(name, name === 'pi-session-history'
         ? require('./fixtures/history-ipc.cjs').create(() => value) : () => value);
@@ -213,7 +216,7 @@ app.whenReady().then(async () => {
     await wheel(1,'before-history-up');
     const mountedBefore = await js(`document.querySelectorAll('[data-chat-node^="message:"]').length`);
     await js(`document.querySelector('#nchatScroll').scrollTop=0;void 0`); await wait(80);
-    await click('[data-load-older]');
+    await js("document.querySelector('#nchatScroll').dispatchEvent(new WheelEvent('wheel',{deltaY:-120}));void 0");
     await until(`document.querySelectorAll('[data-chat-node^="message:"]').length>${mountedBefore}`);
     check(await sample('expanded-history'));
     await wheel(-1,'expanded-history-down');

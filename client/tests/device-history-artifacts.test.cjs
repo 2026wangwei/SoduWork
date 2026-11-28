@@ -28,21 +28,37 @@ function fixture(t, close) {
   return { workRoot, row, write, cwd, taskId };
 }
 
+function completedWindow(t, files) {
+  // Model a session that covered the writes, then replay it after it finished.
+  // The filesystem clock and the JavaScript wall clock can tick independently.
+  const stamps = files.flatMap(file => {
+    const { ctimeNs, mtimeNs } = fs.statSync(file, { bigint: true });
+    return [Number(ctimeNs) / 1e6, Number(mtimeNs) / 1e6];
+  });
+  const started = Math.floor(Math.min(...stamps));
+  const ended = Math.ceil(Math.max(...stamps));
+  t.mock.timers.enable({ apis: ['Date'], now: ended + 1000 });
+  return { started, ended };
+}
+
 test('old Runner results recover from an allocated scratch window with no manifest or output events', async t => {
-  const f = fixture(t), start = Date.now() - 50;
+  const f = fixture(t);
   const old = f.write('prior.txt', 'older');
   fs.utimesSync(old, 1, 1);
-  f.write('index.html', '<link rel="stylesheet" href="site.css">');
-  f.write('shots/example.png', Buffer.from([137,80,78,71]));
-  f.write('site.css', 'body{}');
-  f.write('credentials.json', 'excluded');
+  const files = [
+    f.write('index.html', '<link rel="stylesheet" href="site.css">'),
+    f.write('shots/example.png', Buffer.from([137,80,78,71])),
+    f.write('site.css', 'body{}'),
+    f.write('credentials.json', 'excluded'),
+  ];
   fs.symlinkSync(old, path.join(f.cwd, 'linked.txt'));
   fs.linkSync(old, path.join(f.cwd, 'hard.txt'));
-  await delay(6);
-  const end = Date.now();
+  const { started, ended } = completedWindow(t, files);
+  const newer = f.write('after-session.txt', 'outside the recorded window');
+  fs.utimesSync(newer, new Date(ended + 1000), new Date(ended + 1000));
   const data = await native.read({ app: { getPath: () => f.workRoot }, row: f.row, session: {}, guard() {},
     runtime: { rpc: async () => ({ ok: true, data: { ok: true, seq: 1, ref: f.row.id, taskId: f.taskId, workDir: f.cwd,
-      status: 'done', firstStarted: start / 1000, ended: end / 1000, items: [{ seq: 1, kind: 'say', text: 'complete' }] } }) } });
+      status: 'done', firstStarted: started / 1000, ended: ended / 1000, items: [{ seq: 1, kind: 'say', text: 'complete' }] } }) } });
   assert.equal(data.localWorkspace.cwd, f.cwd);
   const args = { ...f, workspace: data.localWorkspace };
   const indexed = await project.capture(args);
@@ -81,20 +97,19 @@ test('old Runner results recover from an allocated scratch window with no manife
 });
 
 test('legacy manifests keep preview evidence accessible beside the actual deliveries', async t => {
-  const f = fixture(t), started = Date.now() - 100;
+  const f = fixture(t);
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/askAAAAASUVORK5CYII=', 'base64');
   const reserved = '.soduwork/evidence/site.png';
-  for (const name of [reserved, 'diagnostics.png', 'trace.png', 'poster.png']) f.write(name, png);
-  f.write('index.html', '<title>Page</title>');
-  f.write('.soduwork/delivery.json', JSON.stringify({
+  const files = [reserved, 'diagnostics.png', 'trace.png', 'poster.png'].map(name => f.write(name, png));
+  files.push(f.write('index.html', '<title>Page</title>'));
+  files.push(f.write('.soduwork/delivery.json', JSON.stringify({
     schemaVersion: 1, processFiles: ['diagnostics.png'], deliverables: [
       { path: 'index.html' }, { path: 'poster.png' }, { path: reserved },
       { path: 'trace.png', primary: true, role: 'verification' }, { path: 'diagnostics.png' },
     ],
-  }));
-  await delay(5);
+  })));
   const history = await project.capture({ ...f, workspace: { id: f.row.id, taskId: f.taskId,
-    cwd: f.cwd, started, ended: Date.now() } });
+    cwd: f.cwd, ...completedWindow(t, files) } });
   // Old records could mark a capture primary even with the evidence directory or role present.
   for (const row of history.items) {
     if (row.metadata.relative === reserved || row.metadata.relative === 'trace.png') {
@@ -145,10 +160,8 @@ test('current-turn receipts distinguish a preview from a replacement illustratio
 test('old Pi scratch allocations recover shell-generated files only with the original local ref and terminal archive window', async t => {
   const f = fixture(t), id = 'pi-generated', archive = path.join(f.workRoot, 'pi-agent', 'sessions', id + '.jsonl');
   fs.mkdirSync(path.dirname(archive), { recursive: true });
-  const start = new Date(Date.now() - 50).toISOString();
-  f.write('report.pdf', '%PDF-1.4');
-  await delay(10);
-  const end = new Date().toISOString();
+  const { started, ended } = completedWindow(t, [f.write('report.pdf', '%PDF-1.4')]);
+  const start = new Date(started).toISOString(), end = new Date(ended).toISOString();
   const entries = [
     { type: 'session', id, cwd: f.cwd, timestamp: start },
     { type: 'message', message: { role: 'user', content: 'make a PDF' }, timestamp: start },

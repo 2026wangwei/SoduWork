@@ -24,6 +24,24 @@ function setup() {
     advance(ms) { now+=ms; for (const [key,timer] of Array.from(timers)) if(timer.at<=now) { timers.delete(key); timer.fn(); } },
     get output() { return output; }, get parseCount() { return parseCount; } };
 }
+test('legacy media fences consume the JSON terminator and preserve the following Markdown', () => {
+  const media = JSON.stringify({ type: 'gallery', items: [{ url: 'shots/first.png' }, { url: 'shots/second.png' }] });
+  const view = setup();
+  for (const gap of ['\n', ' ']) {
+    const text = 'Delivered the page.\nsoduwork-media```json' + gap + media + '\n```\n\n**Checks**\n\n- passed';
+    const html = view.markdown.rich(text);
+    assert.match(html, /<p>Delivered the page\.<\/p>/);
+    assert.match(html, /<pre><code class="language-soduwork-media">/);
+    assert.match(html, /<p><strong>Checks<\/strong><\/p>/);
+    assert.match(html, /<li>passed<\/li>/);
+    view.render(text);
+    view.advance(400);
+    assert.equal(view.output, html);
+  }
+  const example = '````markdown\nsoduwork-media```json\n' + media + '\n```\n````';
+  assert.doesNotMatch(view.markdown.rich(example), /class="language-soduwork-media"/);
+  assert.doesNotMatch(view.markdown.rich('    soduwork-media```json\n    ' + media + '\n    ```'), /class="language-soduwork-media"/);
+});
 test('long streamed code retains its fence and all earlier output across 24k', () => {
   const view=setup(); const text='```js\n'+'const value = 1;\n'.repeat(2000);
   assert.match(view.render(text.slice(0,24000)), /<pre><code/);

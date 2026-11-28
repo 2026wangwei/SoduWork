@@ -366,10 +366,13 @@ function assertReadable(app, id, captured = actor(app), row = {}) {
 function assertDeviceReadable(app, id, captured = actor(app), row = {}) {
   return assertClassifiedReadable(app, id, captured, row, null, true);
 }
-function isDeviceChat(row, classification) {
-  return classification.kind === 'ordinary' && !row.deviceTransferId && !row.importedHistory &&
+function isNativeOrigin(row) {
+  return !row.deviceTransferId && !row.importedHistory &&
     !row.importDigest && !row.sourceSessionId && !row.sourceClientId && !row.sourceLocalId &&
     (!row.location || row.location === 'local') && (!row.locationMode || row.locationMode === 'local');
+}
+function isDeviceChat(row, classification) {
+  return classification.kind === 'ordinary' && isNativeOrigin(row);
 }
 function requestsAccountContext(options) {
   return Boolean(options.taskRef || options.taskId || options.taskSession || options.requireTaskBinding ||
@@ -447,6 +450,17 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
     if (origin(candidate.hub) !== hub) continue;
     try { if (owners.includes(runtime.legacyScope(hub, candidate.clientId, captured.identity))) proven = true; }
     catch (_) { /* Expired tokens cannot establish new legacy provenance. */ }
+  }
+  if (!proven && !row.cached && !row.source && row.adapterId !== 'account-sync' && isNativeOrigin(row) &&
+      (row.localReplica || row.nativeHistory || local.kind === 'ordinary' ||
+        typeof row.path === 'string' && path.isAbsolute(row.path))) {
+    // Old desktop builds bound the account in native memory but kept the Hub
+    // in the acknowledged outbound sync record. Combine both for this session.
+    const read = captured.readMetadata || metadataReader(app);
+    const binding = read('session-memory-bindings', id);
+    if (binding?.owner === captured.owner && !binding.hub && Array.isArray(binding.ids))
+      proven = require('./legacy-history-receipts.cjs').forApp(app)
+        .getHub(id, captured.owner, captured.identity, local.ids) === hub;
   }
   if (!proven) {
     if (owners.length) {
