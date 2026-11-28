@@ -12,13 +12,16 @@ const { migrate } = require('../main/conversation/legacy-upgrade-artifacts.cjs')
 
 async function fixture(t) {
   const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-upgrade-media-')));
-  t.after(() => fs.rmSync(profile, { recursive: true, force: true }));
+  let store;
+  t.after(() => {
+    store?.close();
+    fs.rmSync(profile, { recursive: true, force: true });
+  });
   const cwd = path.join(profile, 'workspace');
   fs.mkdirSync(cwd);
   const app = { getPath: () => profile }, id = 'existing-session';
   const file = path.join(profile, 'conversation-replicas', 'history.sqlite');
-  const store = require('../main/conversation/replica-store.cjs').create(file);
-  t.after(() => store.close());
+  store = require('../main/conversation/replica-store.cjs').create(file);
   const [row] = store.register([{ id, cwd, adapterId: 'pi' }]);
   const before = await journal.snapshot(cwd);
   const bytes = new Map([
