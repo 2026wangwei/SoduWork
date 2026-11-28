@@ -187,6 +187,35 @@ test('website runtimes are isolated per conversation and restart when the artifa
   }
 });
 
+test('legacy image paths resolve only to a listed active-conversation image', async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-legacy-image-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'chart.png'), 'registered');
+  const snapshot = outputs.scan(root, 0, Date.now() - 5000);
+  fs.writeFileSync(path.join(root, 'other.png'), 'not registered');
+  const session = { cwd: root, outputSnapshot: () => snapshot };
+  const read = (handle, name) => runtime.action(handle, 'ref', { imagePath: name }, 'image-full', {});
+  assert.equal((await read(session, 'chart.png')).data, Buffer.from('registered').toString('base64'));
+  assert.equal((await read(session, 'other.png')).ok, false);
+  assert.equal((await read({ ...session, localReplica: true }, 'chart.png')).ok, false);
+});
+
+test('a live indexed PDF streams inline by artifact ID and exposes only that document', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-indexed-pdf-'));
+  t.after(() => { runtime.closeRef('indexed-pdf'); fs.rmSync(root, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(root, 'report.pdf'), '%PDF-1.7 synthetic');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'other bytes');
+  const snapshot = outputs.scan(root, 0, Date.now() - 5000);
+  const artifact = snapshot.delivery.items.find(item => item.name === 'report.pdf');
+  const result = await runtime.preview({ cwd: root, outputSnapshot: () => snapshot }, 'indexed-pdf', artifact.artifactId);
+  assert.equal(result.ok, true, result.reason);
+  const ranged = await request(result.url, {headers: {Range: 'bytes=0-3'}});
+  assert.equal(ranged.status, 206);
+  assert.equal(ranged.headers['content-type'], 'application/pdf');
+  assert.equal(ranged.body, '%PDF');
+  assert.equal((await request(new URL('notes.txt', result.url).href)).status, 404);
+});
+
 test('video artifacts stream from an opaque loopback URL and honor byte ranges', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-video-runtime-'));
   try {

@@ -61,7 +61,7 @@
     }
     function hasCreatedTask(taskId, sessionId = ctx._sessionId) {
       if (!taskId || !sessionId || String(sessionId) !== String(ctx._sessionId)) return false;
-      return [...rows(scope(), String(sessionId)).values()].some(record => current(record) && isRequirement(record) &&
+      return [...rows(scope(), String(sessionId)).values()].some(record => !record.readOnly && current(record) && isRequirement(record) &&
         record.state?.phase === 'succeeded' && String(record.state.receipt?.id || '') === String(taskId) &&
         !record.state.receipt.gone && (!record.state.ownerScope || record.state.ownerScope === scope()));
     }
@@ -147,7 +147,7 @@
     }
     async function persist(record) {
       clearTimeout(record.timer); record.timer = null;
-      if (!owned(record)) return;
+      if (record.readOnly || !owned(record)) return;
       if (record.pending) {
         await record.pending;
         // A write continuation may start another write; wait until the latest submitted state reaches disk.
@@ -162,7 +162,7 @@
       record.pending = (async () => {
         try {
           draft.files = await Promise.all(files.map(fileData));
-          if (!owned(record)) return;
+          if (record.readOnly || !owned(record)) return;
           const result = await ctx._api().saveWorkCard(record.sessionId, draft);
           if (!owned(record)) return;
           if (!result?.ok) throw Error(result?.reason || '会话存储没有确认写入');
@@ -202,7 +202,7 @@
     async function restoreRequirement(record) {
       const state = record.state || {}, receipt = state.receipt;
       const epoch = ctx._viewEpoch, nav = navigation;
-      const eligible = () => current(record) && epoch === ctx._viewEpoch && nav === navigation &&
+      const eligible = () => !record.readOnly && current(record) && epoch === ctx._viewEpoch && nav === navigation &&
         record.actionId === 'work.requirement.create' && state.phase === 'succeeded' && receipt?.id && !receipt.gone &&
         (!state.ownerScope || state.ownerScope === scope()) && !ctx._collabTasks?.has(receipt.id) &&
         !global.ChatCollaborationStore?.isQueueRemoved?.(record.sessionId, receipt.id);
@@ -373,7 +373,7 @@
       }
     }
     async function activate(record) {
-      if (!current(record)) return false;
+      if (record.readOnly || !current(record)) return false;
       if (isInline(record) && ctx._mount?.()?.querySelector('#nchatList') && !cardHost(record)) return false;
       capture();
       global.WorkEntrySheet?.close?.(false, true);
@@ -417,11 +417,15 @@
         }
         for (const value of result.cards || []) {
           const existing = list.get(value.id);
-          if (existing?.dirty || existing?.pending) continue;
+          if (existing?.dirty || existing?.pending) {
+            existing.readOnly = result.readOnly === true;
+            if (existing.readOnly) clearTimeout(existing.timer);
+            continue;
+          }
           const files = (value.files || []).map(file => new File([Uint8Array.from(atob(file.data), c => c.charCodeAt(0))],
             file.name, {type: file.type, lastModified: file.lastModified}));
           // Preserve object identity so pending submission callbacks update the restored card.
-          list.set(value.id, Object.assign(existing || {}, value, {files, owner, scopeEpoch, sessionId, version: existing?.version || 0}));
+          list.set(value.id, Object.assign(existing || {}, value, {files, owner, scopeEpoch, sessionId, readOnly: result.readOnly === true, version: existing?.version || 0}));
         }
         const retainedDraft = !ctx._ref && ctx._sessionId === String(sessionId) && ctx._snap?.workOnly === true;
         ctx._sessionId = String(sessionId); ctx._draftKey = ctx._sessionId; viewSession = ctx._sessionId;
@@ -477,7 +481,7 @@
     }
     async function restoreActive() {
       const last = [...rows(scope(), String(ctx._sessionId)).values()].filter(record =>
-        !(record.actionId==='work.automation.create' && record.seed.source==='web-app') &&
+        !(record.actionId==='work.automation.create' && record.seed?.source==='web-app') &&
         (!record.closed || (isRequirement(record) && record.state.phase === 'succeeded'))).at(-1);
       if (last) await activate(last);
     }
@@ -503,7 +507,7 @@
         if (active === record && (!isRequirement(record) || cardHost(record)?.querySelector('.pui-surface'))) continue;
         const destination = isInline(record) ? cardHost(record) : history;
         if (!destination) continue;
-        const version = String(record.version || 0) + ':' + String(record.revision || 0);
+        const version = String(record.version || 0) + ':' + String(record.revision || 0) + ':' + Boolean(record.readOnly);
         if (isInline(record) && destination.dataset.workCardVersion === version &&
             destination.querySelector('.nchat-work-record')) continue;
         if (isInline(record)) destination.replaceChildren();
@@ -513,11 +517,13 @@
         prompt.textContent = (record.actionId === 'work.automation.create' ? '【自动化】：' : '【需求】：') + record.prompt;
         const title = document.createElement('strong'); title.textContent = record.state.receipt?.title || record.state.draft?.title || record.state.proposal?.title || record.prompt || '工作记录';
         const status = document.createElement('span');
-        status.textContent = record.seed.source==='web-app' && record.state.phase==='loading'?'正在整理计划…':({succeeded:record.state.receipt?.enabled === false ? '已停用' : '已创建', cancelled:'已取消', submitting:'正在保存', loading:'待完善', error:'需要处理'})[record.state.phase] || '草稿 · 尚未创建';
+        status.textContent = record.seed?.source==='web-app' && record.state.phase==='loading'?'正在整理计划…':({succeeded:record.state.receipt?.enabled === false ? '已停用' : '已创建', cancelled:'已取消', submitting:'正在保存', loading:'待完善', error:'需要处理'})[record.state.phase] || '草稿 · 尚未创建';
         const open = document.createElement('button'); open.type = 'button'; open.className = 'cp-ghost';
         open.textContent = record.state.phase === 'succeeded' ? '查看创建结果' : record.state.phase === 'cancelled' ? '查看记录' : '继续编辑';
         open.onclick = () => { void activate(record).catch(error => tell(error.message)); };
-        row.append(prompt, status, title, open); destination.appendChild(row);
+        row.append(prompt, status, title);
+        if (!record.readOnly) row.appendChild(open);
+        destination.appendChild(row);
       }
       history.hidden = !history.childElementCount;
     }

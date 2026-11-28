@@ -503,7 +503,8 @@
         decorateMemo.filesSig === filesSig && decorateMemo.stateSig === stateSig && decorateMemo.carrySig === carrySig)
       return decorateMemo.decorated;
     const historyMedia = snapshot.localReplica === true && (html.includes('<pre>') || html.includes('data-local-media-declaration'));
-    if (!files.length && !historyMedia && !snapshot?.artifactUrl && !snapshot?.cloudHandoff?.artifactUrl && !snapshot?.execution?.artifactUrl && !carrySig) return html;
+    const historyPackage = snapshot.localReplica && snapshot.historicalPackageKind;
+    if (!files.length && !historyMedia && !historyPackage && !snapshot?.artifactUrl && !snapshot?.cloudHandoff?.artifactUrl && !snapshot?.execution?.artifactUrl && !carrySig) return html;
     const root = document.createElement('div'); root.innerHTML = html;
     const hasVersions = files.some(file => file.versionId);
     if (hasVersions || snapshot.historyRecovery?.prefixMessageCount) assignDeliveryTurns(root, snapshot, files);
@@ -533,6 +534,20 @@
     if (files.length) {
       inlineVideos(root,files,ref);
       pluginDrafts(root,files,ref,snapshot);
+    }
+    const expectedKinds = historyPackage === 'both' ? ['app', 'plugin'] : historyPackage ? [historyPackage] : [];
+    const missingKinds = expectedKinds.filter(kind => !files.some(file => isPluginDraft(file) && !file.pluginSuperseded &&
+      file.pluginValidation?.state === 'ready' && file.historicalPackageKind === kind));
+    if (missingKinds.length && ref) {
+      const card = root.ownerDocument.createElement('div');
+      card.className = 'nplugin-draft'; card.dataset.chatNode = 'history-package-picker';
+      const copy = root.ownerDocument.createElement('div'); copy.className = 'nplugin-draft-copy';
+      const title = root.ownerDocument.createElement('b');
+      title.textContent = missingKinds.length > 1 ? '会话安装包' : missingKinds[0] === 'app' ? '即用安装包' : '插件安装包';
+      const hint = root.ownerDocument.createElement('span'); hint.textContent = '选择原工作目录中的草稿文件，可检查随包资源并安装。';
+      const button = root.ownerDocument.createElement('button'); button.type = 'button'; button.className = 'btn-mini';
+      button.dataset.chooseHistoryPackage = ref; button.textContent = '选择文件安装';
+      copy.append(title, hint); card.append(copy, button); root.appendChild(card);
     }
     // The unified decorator owns both local and cloud file cards. A second
     // fallback must not revive a result it intentionally withheld/deduplicated.
@@ -867,9 +882,17 @@
     if(!row || !/^\/(?:api\/v1\/)?attachments\/[^/?#]+\?/.test(row.url||'')) throw Error('这份成果暂时不可用，请刷新后重试');
     return {...row,url:hub.attachmentUrl(row)};
   }
+  function indexedPreview(file) {
+    return Boolean(file?.artifactId && (!file.taskId || (file.remoteMaterialized && !String(file.artifactId).startsWith('task-output:'))));
+  }
   async function readPreview(file, api, ref, mode='read', current = () => true) {
     if (file.cloudPending && !file.processEvidence) file = await materialize(file, api, ref, { previewOnly: true });
-    if (file.taskId && file.attachmentId) {
+    // Some earlier local output lists contained only a path. Let the main process
+    // resolve it against the active conversation's image index.
+    if (!file.artifactId && file.path && (!file.taskId || file.remoteMaterialized) && !file.archivedReadOnly &&
+        (mode === 'image' || mode === 'image-full') && isImage(file) && api?.artifactAction)
+      return api.artifactAction(ref, { imagePath: file.path }, mode);
+    if (file.taskId && file.attachmentId && !indexedPreview(file)) {
       const row = await taskAttachment(file,global.SoduWorkAPI);
       if (mode === 'preview' && isVideo(file)) {
         const url = String(row.url || '');
@@ -1213,7 +1236,9 @@
     const id = JSON.stringify([ref, file.taskId, file.attachmentId, previewOnly]);
     if (materializeTaskPending.has(id)) return materializeTaskPending.get(id);
     const pending = (async () => {
-      const result = await bridge.attachmentMaterialize({ ref, taskId: file.taskId, attachmentId: file.attachmentId, ...(previewOnly ? { previewOnly: true } : {}) });
+      const result = await bridge.attachmentMaterialize({ ref, taskId: file.taskId, attachmentId: file.attachmentId,
+        ...(/\.pdf$/i.test(file.name || file.relative || '') ? { pdfAttachmentId: file.attachmentId } : {}),
+        ...(previewOnly ? { previewOnly: true } : {}) });
       if (!result?.ok) throw Error(result?.reason || '成果保存失败，请重试');
       const mine = (result.artifacts || []).find(item => String(item.attachmentId || '') === String(file.attachmentId));
       if (!mine) throw Error('成果未完整保存，请重试');
@@ -1246,7 +1271,7 @@
   // and the WeakMap drops entries for replaced nodes on its own.
   function resetDecorateCache() { decorateMemo = null; }
   const api={presentDeliveryPaths,filesForTurn,deliveryTurns,scoped,taskOutputId,fileTarget,workspaceFileTarget,mergeFileChanges,mentions,linkify,decorate,sanitize,load,taskAttachment,openTaskFile,materialize,materializeTask,shouldRefresh,
-    isImage,isVideo,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,localImageDeclaration,localImageGroup,
+    isImage,isVideo,indexedPreview,readPreview,imageUrl,videoUrl,hydrateImages,hydrateVideos,localImageDeclaration,localImageGroup,
     isPluginDraft,pluginDrafts,_supersededDraftCard:supersededDraftCard,_claimInlineMedia:claimInlineMedia,
     _buildLinkIndex:buildLinkIndex,_decorateStateSignature:decorateStateSignature,resetDecorateCache};
   global.ChatOutputLinks=api;

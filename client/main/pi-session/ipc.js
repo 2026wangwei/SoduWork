@@ -511,7 +511,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         if (require('../conversation/shared-history.cjs').isLocalIdentity(indexed, opts.chatId))
           return { ok: false, reason: '无法确认这条会话属于当前账号或服务，请切回原连接' };
       }
-      const openLocalHistory = async (historyPreview = false, allowContinuation = false, previewReason = '') => {
+      const openLocalHistory = async (historyPreview = false, allowContinuation = false, previewReason = '', retainedView) => {
         const captured = requestActor;
         if (local) {
           if (local.deleted) return { ok: false, notFound: true, reason: '这条会话已经不存在了' };
@@ -520,7 +520,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
           const old = !historyPreview && session.findBySessionId(local.id);
           if (old?.inFlight?.()) return { ok: false, reason: '这条会话还在执行，完成或停止后再操作' };
           if (old && await old.close() === false) return { ok: false, reason: '会话仍在关闭，请稍后重试' };
-          const projection = await _sharedHistory.open(local.id, { historyPreview, allowContinuation, previewReason });
+          const projection = retainedView || await _sharedHistory.open(local.id, { historyPreview, allowContinuation, previewReason });
           if (projection) {
             let handle;
             try {
@@ -551,6 +551,12 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         const blocked = session.deviceTransfer?.()?.blocked(local.id);
         if (startDeviceSegment && (blocked || local.deleted || !executable))
           return { ok: false, reason: '当前会话无法在此设备继续，请重新打开历史' };
+        if (desktopContinuation && local.deviceHistory && !local.deleted && !local.cached && !blocked && executable &&
+            !ordinaryDeviceHistory && opts.historyIntent === 'view' && !historyAccess.requestsAccountContext(opts) &&
+            !session.findBySessionId(local.id)) {
+          const retained = await _sharedHistory.stoppedRunnerRequirement?.(local.id, { open: true });
+          if (retained) return await openLocalHistory(true, false, '', retained);
+        }
         if (deviceHistoryIntent === 'view') {
           const live = session.findBySessionId(local.id);
           const switching = require('../agent-runtime/switchable-conversation');
@@ -1610,10 +1616,14 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
   const contentMigration = require('../conversation/content-migration.cjs').create({
     app, identityOf: sendIdentityOf || identityOf, includeAccountHistory: false });
   contentMigration.start();
+  const legacyNativeUpgrade = session.refreshUpgradeInventory && require('../conversation/legacy-native-upgrade.cjs').create({
+    app, session, store: _sharedHistory.store, actor: _sharedHistory.captureScope, guard: _sharedHistory.guardScope,
+    backfill: _sharedHistory.backfill });
+  legacyNativeUpgrade?.start();
   let persistenceClose = null;
   const disposePersistence = () => {
     if (!persistenceClose) persistenceClose = Promise.allSettled([
-      contentMigration.close(), _accountSync.close(), _sharedHistory?.close(), _usage?.persist?.(),
+      contentMigration.close(), _accountSync.close(), Promise.resolve(legacyNativeUpgrade?.close()).then(() => _sharedHistory?.close()), _usage?.persist?.(),
     ]).then(results => {
       if (results.some(result => result.status === 'rejected'))
         console.warn('[conversation] Pending local data could not be saved before exit');

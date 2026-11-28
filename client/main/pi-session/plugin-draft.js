@@ -209,7 +209,13 @@ function installIpc(ipcMain, session, app, identityOf) {
     if (!require('../platform-connections/index.cjs').trustedSender(event)) {
       return { ok: false, reason: '只允许 SoduWork 客户端安装会话插件' };
     }
-    try { return await readSessionAsync(session.get(ref), target, app, identityOf); }
+    try {
+      const handle = session.get(ref);
+      if (target === 'choose-history-package')
+        return handle?.chooseHistoryPackage ? await handle.chooseHistoryPackage(require('electron').dialog)
+          : { ok: false, reason: '请重新打开原会话后选择草稿' };
+      return await readSessionAsync(handle, target, app, identityOf);
+    }
     catch (error) { return { ok: false, reason: '插件草稿读取失败：' + error.message }; }
   });
 }

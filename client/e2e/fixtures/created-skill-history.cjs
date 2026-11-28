@@ -35,8 +35,10 @@ async function seed(app, root) {
     fs.mkdirSync(path.dirname(archive), { recursive: true });
     fs.writeFileSync(archive, [
       { type: 'session', id, cwd },
-      { type: 'message', message: { role: 'user', content: 'Synthetic task' } },
-      { type: 'message', message: { role: 'assistant', content: 'Synthetic answer' } },
+      { type: 'message', message: { role: 'user', content: 'Synthetic task', ...(id === 'history-unrecorded'
+        ? { plugins: [{ pluginId: 'local:plugin-builder', name: 'Builder' }] } : {}) } },
+      { type: 'message', message: { role: 'assistant', content: id === 'history-unrecorded'
+        ? 'Created delivery/soduwork-plugin-draft.json' : 'Synthetic answer' } },
     ].map(entry => JSON.stringify(entry)).join('\n'));
     return { id, adapterId: 'pi', path: archive, cwd, count: 2, workOwner: scope(identity()),
       creator: { account: 'one', hub: identity().hub } };

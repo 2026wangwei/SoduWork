@@ -24,6 +24,8 @@ function select(row, request, action = request.action) {
   return { row: contribution, definition: row.definition, revision: row.revision };
 }
 function run(request) {
+  if (request.action === 'selected-history-package')
+    return require('./conversation/device-history-plugins.cjs').load(request.root, request.relative, new Map(), request.skillRuntimeEntry, true);
   if (request.action === 'history-package-cards' || request.action === 'read-history-package') {
     const plugins = require('./conversation/device-history-plugins.cjs'), receipts = new Map(request.receipts);
     if (request.action === 'read-history-package')

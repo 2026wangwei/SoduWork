@@ -649,7 +649,7 @@ async function show(event, raw) {
     const resolved = access ? { ok: true, path: path.resolve(payload.target) } : fileTarget(item.ref, payload.target, active);
     if (!resolved.ok) return resolved;
     const previewCwd = item.previewCwd = active.cwd;
-    if (access || /\.(?:html?|mp4|m4v|webm|mov|ogv)$/i.test(resolved.path)) {
+    if (access || /\.(?:html?|pdf|mp4|m4v|webm|mov|ogv)$/i.test(resolved.path)) {
       const started = await artifactRuntime.previewInput(active, item.ref, resolved.path, access);
       if (!started.ok) return started;
       if (sessions.get(item.ref) !== source || !liveContents(owner, item) || generation !== item.showGeneration) return closedResult();

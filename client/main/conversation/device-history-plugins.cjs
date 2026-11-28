@@ -17,17 +17,26 @@ function resource(relative) {
   try { resources.resourcePath(match[1]); return true; } catch (_) { return false; }
 }
 
-function load(root, relative, receipts, skillRuntimeEntry) {
-  const dependencies = new Set([relative]), signatures = [];
+function load(root, relative, receipts, skillRuntimeEntry, fromPicker = false) {
+  const dependencies = new Set([relative]), signatures = [], selectedFiles = [];
   function verified(name, limit) {
-    const stamp = receipts.get(name);
+    // A native picker grants one package and the files declared by that package.
+    // An automatic history card requires an existing per-file receipt.
+    let stamp = receipts.get(name);
+    if (fromPicker) {
+      const file = require('node:path').join(root, name);
+      resources.assertNoLinks(root, file);
+      stamp = require('./runtime-artifacts.cjs').stamp(require('node:fs').lstatSync(file, { bigint: true }));
+    }
     if (!stamp) throw Error('此草稿引用的文件缺少本会话的本机记录');
     dependencies.add(name);
-    return readRecorded(root, name, stamp, limit);
+    const file = readRecorded(root, name, stamp, limit);
+    if (fromPicker) selectedFiles.push({ relative: name, stamp, sha256: file.revision });
+    return file;
   }
   const manifest = verified(relative, drafts.MAX_BYTES);
   signatures.push(manifest.revision);
-  const archive = drafts.ARCHIVE.test(relative);
+  const archive = drafts.ARCHIVE.test(relative) || fromPicker && /\.zip$/i.test(relative);
   let body = archive ? require('../plugin-package-reader.cjs').readPersonalArchive(manifest.bytes)
     : drafts.parseJson(manifest.bytes.toString('utf8'));
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Error('插件草稿格式无效');
@@ -67,7 +76,7 @@ function load(root, relative, receipts, skillRuntimeEntry) {
     const failed = preview.checks?.find(row => row.ok === false);
     if (!preview.ok || failed) throw Error(failed?.label || '插件静态检查未通过');
   }
-  return { body, ...(skill ? skills.result(skill) : {}), editBaseline, dependencies: [...dependencies],
+  return { body, ...(fromPicker ? { selectedFiles } : {}), ...(skill ? skills.result(skill) : {}), editBaseline, dependencies: [...dependencies],
     revision: drafts.revisionOf(signatures), digest: manifest.revision, skillName: skill?.name };
 }
 
@@ -87,6 +96,7 @@ function inspect(root, files, receipts, skillRuntimeEntry) {
     const revisionAt = dependencies.reduce((at, name) =>
       Math.max(at, Number(receipts.get(name)[3]) / 1e6), Number(stamp[3]) / 1e6);
     cards.push({ relative, pluginDraft: true, pluginPackage: drafts.ARCHIVE.test(relative), skillPackage: Boolean(loaded?.skillName),
+      historicalPackageKind: loaded && !loaded.skillName ? (loaded.body.template === 'app' ? 'app' : 'plugin') : undefined,
       pluginKey: loaded?.skillName || loaded?.body.key || '', pluginName: loaded?.skillName || loaded?.body.name || '',
       pluginVersion: loaded?.body.version || '', pluginRevision: revision, pluginManifestDigest: loaded?.digest,
       dependencies, pluginDeliveryPaths: (loaded?.body.resources || []).map(row => path.join(path.dirname(relative), row.path)),

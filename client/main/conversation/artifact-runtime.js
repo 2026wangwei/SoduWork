@@ -382,6 +382,7 @@ function publicArtifact(ref, item, link) {
     changedInTurn: Boolean(item && item.changedInTurn),
     ...(item && item.pluginDraft ? { pluginDraft: true, pluginPackage: Boolean(item.pluginPackage), skillPackage: Boolean(item.skillPackage),
       pluginName: safeText(item.pluginName, 120), pluginVersion: safeText(item.pluginVersion, 40),
+      ...(item.historicalPackageKind ? { historicalPackageKind: item.historicalPackageKind } : {}),
       pluginDeliveryPaths: item.pluginDeliveryPaths,
       pluginIdentity: safeText(item.pluginIdentity, 160), pluginSuperseded: item.pluginSuperseded === true,
       pluginValidation: item.pluginValidation || { state: 'pending' },
@@ -442,7 +443,7 @@ function candidate(record, rawPath) {
     clean = clean.startsWith(record.mount) ? clean.slice(record.mount.length) : path.posix.join(record.siteRoot, clean);
   }
   let target = clean ? path.resolve(record.root, clean) : record.entry;
-  if (!within(record.root, target, true)) return null;
+  if (!within(record.root, target, true) || (record.singleFile && target !== record.entry)) return null;
   let root = record.root;
   try {
     if (record.versionFiles) {
@@ -459,7 +460,7 @@ function candidate(record, rawPath) {
     }
     if (!stat.isFile()) throw new Error('not a file');
     const real = fs.realpathSync(target);
-    if (!within(root, real, false) || record.historyArtifacts &&
+    if (!within(root, real, false) || (record.singleFile && real !== record.entry) || record.historyArtifacts &&
         (real !== target || !record.historyArtifacts.verify(target))) return null;
     return { path: real, stat };
   } catch (_) {
@@ -560,7 +561,7 @@ async function startPreview(session, ref, artifactId, current) {
   const found = await resolveView(session, artifactId);
   if (!current()) return { ok: false, reason: '这条会话的预览已经关闭' };
   if (!found.ok) return found;
-  if (!['website', 'video'].includes(found.item.kind) && !(found.historyArtifacts && found.item.kind === 'pdf') && !archiveReaders.has(found.item)) return { ok: false, reason: '这份成果不支持流式预览' };
+  if (!['website', 'video'].includes(found.item.kind) && path.extname(found.path).toLowerCase() !== '.pdf' && !archiveReaders.has(found.item)) return { ok: false, reason: '这份成果不支持流式预览' };
   return startResolvedPreview(found, ref, artifactId);
 }
 
@@ -579,7 +580,8 @@ async function startResolvedPreview(found, ref, artifactId) {
   const versionFiles = entries && require('./frozen-file-index.cjs').index(entries);
   const mount = versionFiles && found.item.kind === 'website' ? '.soduwork-preview-' + crypto.randomBytes(12).toString('hex') + '/' : '';
   const record = {
-    versionFiles, mount, siteRoot: mount && path.posix.dirname(found.item.relative), key, ref: String(ref || ''), artifactId: String(artifactId || ''),
+    singleFile: path.extname(entry).toLowerCase() === '.pdf', versionFiles, mount, siteRoot: mount && path.posix.dirname(found.item.relative),
+    key, ref: String(ref || ''), artifactId: String(artifactId || ''),
     itemAt: Number(found.item.at || 0), version, root, entry, historyArtifacts: found.historyArtifacts,
     server: null, sockets: new Set(), url: '', lastUsed: Date.now(),
   };
@@ -632,7 +634,7 @@ async function previewInput(session, ref, rawTarget, cacheAccess) {
     if (!within(root, entry, false) || !stat.isFile()) return { ok: false, reason: '文件的真实路径超出了当前会话工作区' };
   } catch (_) { return { ok: false, reason: '预览文件已经不存在' }; }
   const extension = path.extname(entry).toLowerCase();
-  const kind = ['.html', '.htm'].includes(extension) ? 'website' : /^video\//.test(MIME[extension] || '') ? 'video' : cacheAccess && MIME[extension] ? 'file' : '';
+  const kind = ['.html', '.htm'].includes(extension) ? 'website' : extension === '.pdf' ? 'pdf' : /^video\//.test(MIME[extension] || '') ? 'video' : cacheAccess && MIME[extension] ? 'file' : '';
   if (!kind) return { ok: false, reason: '这个文件不支持网页流式预览' };
   // An input can be served without scanning the folder or declaring a result.
   // This private runtime key never enters the conversation's artifact index.
@@ -644,6 +646,14 @@ async function previewInput(session, ref, rawTarget, cacheAccess) {
     .finally(() => { if (PENDING.get(key) === promise) PENDING.delete(key); });
   PENDING.set(key, promise);
   return promise;
+}
+
+async function resolveLegacyImage(session, imagePath) {
+  if (!session?.cwd || session.localReplica || session.historyArtifacts) return { ok: false, reason: '历史图片需要通过已核验的成果打开' };
+  const snapshot = await snapshotAsync(session);
+  const target = path.resolve(deliveryRoot(session.cwd, session.deliveryWorkspace), imagePath);
+  const image = snapshot?.items.find(item => item.kind === 'image' && item.artifactId && item.path && path.resolve(item.path) === target);
+  return image ? resolveSnapshot(session, image.artifactId, snapshot) : { ok: false, reason: '这张图片不在当前会话的成果中' };
 }
 
 async function action(session, ref, artifactId, rawAction, deps) {
@@ -666,7 +676,8 @@ async function action(session, ref, artifactId, rawAction, deps) {
     stopRecord(RECORDS.get(key));
     return { ok: true, artifactId, status: 'stopped' };
   }
-  const found = await resolveView(session, artifactId);
+  const legacyImage = (actionName === 'image' || actionName === 'image-full') && typeof artifactId?.imagePath === 'string';
+  const found = legacyImage ? await resolveLegacyImage(session, artifactId.imagePath) : await resolveView(session, artifactId);
   if (!found.ok) return found;
   if (archiveReaders.has(found.item)) {
     if (actionName === 'open') {

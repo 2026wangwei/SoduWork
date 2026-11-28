@@ -196,12 +196,20 @@ function create({ app, identityOf, sessionOf, fetch = fetchWithDeviceAuthRetry,
     }
   }
 
-  async function materializeBatch({ ref, taskId, previewOnly = false } = {}) {
+  async function materializeBatch({ ref, taskId, previewOnly = false, pdfAttachmentId } = {}) {
     if (!ref || !taskId) throw Error('这份成果缺少任务归属，请刷新会话后重试');
     if (!/^[A-Za-z0-9-]{1,64}$/.test(String(taskId))) throw Error('任务标识无效，请刷新会话后重试');
     const { cwd, identity, owner, handle, assertCurrent } = await resolveScope(ref);
-    cacheAccess.revoke(handle, taskId);
-    const batch = currentGroup(await listAttachments(identity, taskId), taskId);
+    if (pdfAttachmentId != null && !/^[A-Za-z0-9-]{1,64}$/.test(String(pdfAttachmentId))) throw Error('附件标识无效');
+    // Each PDF is standalone. Keep its immutable attachment separate from later rounds
+    // with the same filename, without downloading or revoking an unrelated website bundle.
+    const cacheKey = pdfAttachmentId == null ? taskId : taskId + '.pdf.' + pdfAttachmentId;
+    cacheAccess.revoke(handle, cacheKey);
+    let listed = [];
+    try { listed = await listAttachments(identity, taskId); }
+    finally { cacheAccess.recheckTask(handle, taskId, listed); }
+    const batch = currentGroup(pdfAttachmentId == null ? listed : listed.filter(row =>
+      row?.id === pdfAttachmentId && /\.pdf$/i.test(row.filename || row.name || row.path || '')), taskId);
     const attachments = previewOnly ? batch.filter(outputCache.canPreview) : batch;
     await assertCurrent();
     if (!attachments.length) throw Error('这份成果暂无可保存的文件');
@@ -213,7 +221,7 @@ function create({ app, identityOf, sessionOf, fetch = fetchWithDeviceAuthRetry,
       total += expected;
     }
     const userData = fs.realpathSync(app.getPath('userData'));
-    const destination = cacheAccess.directory(app, owner, identity.hub, handle.sessionId || ref, taskId);
+    const destination = cacheAccess.directory(app, owner, identity.hub, handle.sessionId || ref, cacheKey);
     const root = await ensureDirectory(userData, path.relative(app.getPath('userData'), destination).split(path.sep).join('/'));
     const artifacts = [], stamps = new Map();
     for (const row of attachments) {
@@ -252,7 +260,7 @@ function create({ app, identityOf, sessionOf, fetch = fetchWithDeviceAuthRetry,
     }
     await assertCurrent();
     if (!artifacts.length) throw Error('成果未能保存到本地，请重试');
-    cacheAccess.publish(handle, ref, taskId, root, stamps, assertCurrent);
+    cacheAccess.publish(handle, { ref, key: cacheKey, root, stamps, assertCurrent, taskId, attachmentIds: attachments.map(row => row.id) });
     return { ok: true, cwd, taskId, artifacts };
   }
 
@@ -260,14 +268,14 @@ function create({ app, identityOf, sessionOf, fetch = fetchWithDeviceAuthRetry,
   // manual file action. Serialize writes and grant publication for that handle.
   const pending = new WeakMap();
   function materialize(request = {}) {
-    const { ref, taskId, previewOnly = false } = request;
+    const { ref, taskId, previewOnly = false, pdfAttachmentId } = request;
     const handle = sessionOf?.(String(ref || ''));
     if (!handle) return materializeBatch(request);
     let tasks = pending.get(handle);
     if (!tasks) { tasks = new Map(); pending.set(handle, tasks); }
     const previous = tasks.get(taskId);
-    if (previous?.ref === ref && previous?.previewOnly === previewOnly) return previous.promise;
-    const job = { ref, previewOnly };
+    if (previous?.ref === ref && previous?.previewOnly === previewOnly && previous?.pdfAttachmentId === pdfAttachmentId) return previous.promise;
+    const job = { ref, previewOnly, pdfAttachmentId };
     job.promise = (previous?.promise.catch(() => {}) || Promise.resolve()).then(() => {
       if (sessionOf(String(ref || '')) !== handle) throw Error('会话已变化，请重新打开成果');
       return materializeBatch(request);

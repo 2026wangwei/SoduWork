@@ -11,8 +11,10 @@ const { DatabaseSync } = require('node:sqlite');
 const { needsBackup } = require('./device-artifact-archive.cjs');
 
 const METHODS = ['register', 'join', 'importChunk', 'importPlan', 'importPage', 'sealImport', 'discardImport', 'get', 'sourceCopies', 'nativeRows', 'list', 'catalog', 'page', 'directory', 'lifecycleRows', 'remoteLifecycleRows', 'lifecycle', 'cache', 'messages', 'changes', 'ack', 'workspace', 'close'];
+const upgradeLedger = require('./legacy-upgrade-ledger.cjs');
+METHODS.push(...upgradeLedger.methods);
 const REMOTE_LIFECYCLE = "deleted=0 AND revision>0 AND json_extract(data,'$.cached')=1 AND coalesce(json_extract(data,'$.taskId'),'')<>''";
-METHODS.push('archiveUpgradePage', 'markArchiveReviewed', 'saveDeviceHistory', 'deviceHistory', 'deviceHistoryVersion', 'saveConversationTranscript', 'conversationTranscript', 'conversationTranscriptDigest');
+METHODS.push('repairLegacyCreator', 'archiveUpgradePage', 'markArchiveReviewed', 'saveDeviceHistory', 'deviceHistory', 'deviceHistoryVersion', 'saveConversationTranscript', 'conversationTranscript', 'conversationTranscriptDigest');
 function key(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 512 || /[\x00-\x1f]/.test(value))
     throw Error('Invalid local conversation identity');
@@ -112,11 +114,14 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
       .iterate(...rows.map(row => row.id))) aliases.get(row.replica).push(row.alias);
     return rows.map(row => project(row, aliases.get(row.id)));
   }
-  function register(rows, { expectedRevision, expectedAbsent = false, expectedHistoryDigest } = {}) {
+  function register(rows, options) {
+    return transaction(() => registerRows(rows, options));
+  }
+  function registerRows(rows, { expectedRevision, expectedAbsent = false, expectedHistoryDigest } = {}) {
     if (!Array.isArray(rows) || rows.length > 500) throw Error('Invalid local history batch');
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0))
       throw Error('Invalid local history revision');
-    return transaction(() => rows.map(raw => {
+    return rows.map(raw => {
       const id = key(raw.id), ids = [...new Set([id, ...(raw.historyAliasIds || [])].map(key))];
       if (ids.length > 100) throw Error('Too many conversation aliases');
       const matches = ids.map(exact).filter(Boolean), canonical = matches[0]?.id || id;
@@ -147,7 +152,7 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
       }
       for (const alias of ids) db.prepare('INSERT OR IGNORE INTO aliases VALUES(?,?)').run(alias, canonical);
       return project(resolve(canonical));
-    }));
+    });
   }
   function decodeImport(id, pointer) {
     key(id);
@@ -185,6 +190,27 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
     require('./conversation-transcript.cjs').create(db, exact, transaction);
   return {
     register,
+    repairLegacyCreator(id, revision, creator) {
+      key(id);
+      if (!Number.isSafeInteger(revision) || typeof creator?.account !== 'string' || !creator.account.trim() ||
+          !creator.hub || new URL(creator.hub).origin !== creator.hub)
+        throw Error('Invalid historical creator repair');
+      return transaction(() => {
+        const old = db.prepare('SELECT * FROM replicas WHERE id=?').get(id);
+        if (!old || old.deleted || old.catalog_revision !== revision) return false;
+        const data = JSON.parse(old.data);
+        if (data.creator?.account !== '' || Object.keys(data.creator).length !== 1 ||
+            data.cached || data.cloud || data.accountProjection || data.remoteProjection || data.accountConversation ||
+            data.adapterId === 'account-sync' || data.source || data.sourceSessionId || data.sourceClientId ||
+            data.sourceLocalId || data.importedHistory || data.importDigest || data.deviceTransferId ||
+            data.location && data.location !== 'local' || data.locationMode && data.locationMode !== 'local') return false;
+        const next = db.prepare("INSERT INTO operations(replica,action,actor,created) VALUES(?,'upsert','{}',?)")
+          .run(id, Date.now()).lastInsertRowid;
+        db.prepare("UPDATE replicas SET data=json_set(data,'$.creator',json(?)),catalog_revision=? WHERE id=?")
+          .run(JSON.stringify({ account: creator.account, hub: creator.hub }), next, id);
+        return true;
+      });
+    },
     importPlan,
     importPage(id, manifest, page, index) {
       const plan = importPlan(id, manifest), expected = plan?.pages[index];
@@ -319,6 +345,7 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
         return { ok: true };
       });
     },
+    ...upgradeLedger.create(db, transaction, projectPage),
     saveConversationTranscript, conversationTranscript, conversationTranscriptDigest,
     get: id => project(resolve(id)),
     sourceCopies(ids) {
@@ -491,13 +518,19 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
       db.prepare(`INSERT INTO artifact_archive_review(replica,digest) SELECT replica,digest FROM device_history
         WHERE replica=? AND digest=? ON CONFLICT(replica) DO UPDATE SET digest=excluded.digest`).run(key(id), digest);
     },
-    saveDeviceHistory(id, value, { expectedRevision, expectedTransferId, expectedHistoryDigest, expectedCatalogRevision, transcriptTail } = {}) {
+    saveDeviceHistory(id, value, { expectedRevision, expectedTransferId, expectedHistoryDigest, expectedCatalogRevision,
+      requireCatalogRevision = false, transcriptTail, legacyUpgrade } = {}) {
       const data = JSON.stringify(value);
       if (!value || !Array.isArray(value.snapshot?.messages) || !Array.isArray(value.snapshot?.tools) ||
           Buffer.byteLength(data) > 128 * 1024 * 1024) throw Error('Invalid device history snapshot');
       return transaction(() => {
         const row = resolve(id);
         if (!row || row.deleted || expectedRevision !== row.revision) return { ok: false, stale: true };
+        if ((legacyUpgrade || requireCatalogRevision) && expectedCatalogRevision !== row.catalog_revision)
+          return { ok: false, stale: true };
+        if (legacyUpgrade && (row.id !== id || expectedTransferId !== '' || expectedHistoryDigest === undefined ||
+            !value.coverage?.complete || value.imported || value.nativeConflict))
+          throw Error('Cannot migrate an unverified local conversation');
         if (expectedTransferId !== undefined && (JSON.parse(row.data).deviceTransferId || '') !== expectedTransferId)
           return { ok: false, stale: true };
         if (expectedHistoryDigest !== undefined &&
@@ -511,6 +544,15 @@ function create(file, { maxImportBytes = 512 * 1024 * 1024 } = {}) {
         db.prepare(`INSERT INTO device_history VALUES(?,?,?,?) ON CONFLICT(replica)
           DO UPDATE SET data=excluded.data,digest=excluded.digest,updated=excluded.updated
           WHERE device_history.digest<>excluded.digest`).run(row.id, data, digest, Date.now());
+        if (legacyUpgrade) {
+          // The standard index and body become visible in the same commit as
+          // the receipt. A crash on either side of COMMIT cannot replay this ID.
+          upgradeLedger.checkpoint(db, id, legacyUpgrade, digest);
+          const { usedHarnesses } = legacyUpgrade.registration;
+          registerRows([{ ...JSON.parse(row.data), id, deviceHistory: true, historyContentState: 'available',
+            ...(usedHarnesses ? { usedHarnesses } : {}),
+            ...(value.historyProtection ? { historyProtection: value.historyProtection } : {}) }]);
+        }
         if (!needsBackup(value.localArtifactHistory))
           this.markArchiveReviewed(row.id, digest);
         return { ok: true, digest };

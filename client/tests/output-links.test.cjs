@@ -82,6 +82,16 @@ test('task files merge with local files; inputs and tickets stay out of rendered
   assert.equal(result[0].remoteMaterialized,true);
   assert(!JSON.stringify(result).includes('private'));assert(!JSON.stringify(result).includes('input.pdf'));
 });
+test('a synchronized local PNG opens by its artifact ID even if the task attachment is no longer listed', async () => {
+  const file = {artifactId: 'local:chart', name: 'chart.png', relative: 'chart.png', size: 125};
+  const hub = {listAttachments: async () => [{id: 'image', filename: 'chart.png', role: 'output', size: 125}]};
+  const calls = [], api = {outputs: async () => ({ok: true, artifacts: [file]}),
+    artifactAction: async (...args) => { calls.push(args); return {ok: true}; }};
+  const [paired] = await links.load(api, 'ref', ['task'], [], hub);
+  assert.equal(paired.taskId, 'task');
+  assert.deepEqual(await links.readPreview(paired, api, 'ref', 'image-full'), {ok: true});
+  assert.deepEqual(calls, [['ref', 'local:chart', 'image-full']]);
+});
 test('remote validation screenshots stay evidence while declared output images remain deliverables',async()=>{
   const hub={listAttachments:async taskId=>[
     {id:'shot',taskId,filename:'homepage.png',role:'output',evidenceMeta:{kind:'deploy_screenshot',category:'evidence'}},

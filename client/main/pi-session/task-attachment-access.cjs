@@ -33,17 +33,28 @@ function revoke(handle, taskId) {
   grants.get(handle)?.delete(taskId);
 }
 
-function publish(handle, ref, taskId, root, stamps, assertCurrent) {
+function recheckTask(handle, taskId, rows) {
+  const tasks = grants.get(handle);
+  if (!tasks) return;
+  const available = new Set(rows.filter(row => row && (!row.taskId || row.taskId === taskId) &&
+    ['output', 'supporting'].includes(String(row.role || '').toLowerCase()) &&
+    row.evidenceMeta?.verification?.state !== 'failed').map(row => row.id));
+  for (const [key, grant] of tasks) {
+    if (grant.taskId === taskId && !grant.attachmentIds.every(id => available.has(id))) tasks.delete(key);
+  }
+}
+
+function publish(handle, { ref, key, root, stamps, assertCurrent, taskId, attachmentIds }) {
   let tasks = grants.get(handle);
   if (!tasks) { tasks = new Map(); grants.set(handle, tasks); }
   const access = {
-    root, ref,
+    root, ref, taskId, attachmentIds,
     async authorize() {
       await assertCurrent();
-      if (tasks.get(taskId) !== access) throw Error('成果登记已更新，请重新打开');
+      if (tasks.get(key) !== access) throw Error('成果登记已更新，请重新打开');
     },
     verify(file, opened) {
-      if (tasks.get(taskId) !== access || !stamps.has(file)) return false;
+      if (tasks.get(key) !== access || !stamps.has(file)) return false;
       try {
         assertNoLinks(root, file);
         const stat = fs.lstatSync(file, { bigint: true });
@@ -52,7 +63,7 @@ function publish(handle, ref, taskId, root, stamps, assertCurrent) {
       } catch (_) { return false; }
     },
   };
-  tasks.set(taskId, access);
+  tasks.set(key, access);
 }
 
 async function authorize(app, handle, ref, target) {
@@ -71,4 +82,4 @@ async function authorize(app, handle, ref, target) {
   throw Error('这份缓存成果不属于当前会话或已变化，请重新打开');
 }
 
-module.exports = { CACHE_DIR, directory, isPrivate, revoke, publish, authorize };
+module.exports = { CACHE_DIR, directory, isPrivate, revoke, recheckTask, publish, authorize };

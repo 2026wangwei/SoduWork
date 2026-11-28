@@ -43,6 +43,23 @@ async function fixture(t) {
   return { app, profile, row, data, relative, image, nativeFile, callPart, raw, save, response,
     collect: history => recover(app, row, data, history, () => {}, []) };
 }
+test('a legacy Qwen gallery persists its native overview without promoting it to the PNG original', async t => {
+  const f = await fixture(t), fence = String.fromCharCode(96).repeat(3);
+  const reply = 'soduwork-media' + fence + 'json\n' + JSON.stringify({ type: 'gallery', items: [{ url: f.relative }] }) + '\n' + fence;
+  f.raw.at(-1).message.parts[0].text = reply;
+  f.data.snapshot.messages.at(-1).blocks[0].text = reply;
+  f.save();
+  const saved = await f.collect();
+  fs.unlinkSync(f.nativeFile);
+  const published = process.env.SODUWORK_STOCK_CLIENT || path.join(__dirname, '..');
+  const stock = require(path.join(published, 'main/conversation/artifact-versions.cjs'));
+  const [turn] = await stock.readers(f.profile, f.row.id, saved.archive, () => {});
+  const [item] = turn.reader.snapshot().items;
+  assert.equal(item.previewOf, f.relative);
+  assert.deepEqual(fs.readFileSync(item.path), f.image);
+  assert.deepEqual(turn.reader.packageFiles(), []);
+});
+
 test('Qwen offers its full-frame JPEG as a turn-scoped preview even without a workspace, and cannot export it as the original', async t => {
   const f = await fixture(t), h = await f.collect(), v = h.archive.versions[0];
   assert.equal(v.metadata.previewOf, f.relative); assert.equal(v.metadata.name, 'p.jpg');

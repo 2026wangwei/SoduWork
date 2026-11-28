@@ -21,7 +21,11 @@ if (typeof electron === 'string') {
   fs.mkdirSync(cwd);
   fs.writeFileSync(file, '<!doctype html><title>Requirement output</title><h1>Accepted website</h1>');
   const page = { id: 'page', taskId: 'task', filename: 'index.html', role: 'output', size: fs.statSync(file).size };
-  const handle = { cwd, ref, sessionId: ref, snapshot: () => ({ status: 'idle' }) };
+  const pdfFile = path.join(cwd, 'report.pdf');
+  const pngFile = path.join(cwd, 'chart.png');
+  const handle = { cwd, ref, sessionId: ref, snapshot: () => ({ status: 'idle' }),
+    outputSnapshot: () => ({ delivery: { items: [{ artifactId: 'indexed-chart', name: 'chart.png',
+      kind: 'image', path: pngFile, relative: 'chart.png', primary: true }] } }) };
   app.setPath('userData', path.join(root, 'profile'));
   app.on('window-all-closed', () => {});
   async function until(fn, label) {
@@ -33,6 +37,8 @@ if (typeof electron === 'string') {
   }
   async function check() {
     require('../main/agent-runtime/pi-session-bridge').get = id => id === ref ? handle : null;
+    require('../main/pi-session/artifact-ipc').install({ app, ipcMain, BrowserWindow,
+      session: { get: id => id === ref ? handle : null }, workDir: () => cwd });
     require('../main/work-preview').install({ app, ipcMain, BrowserWindow, WebContentsView });
 
     const fixture = path.join(root, 'requirement-preview.html');
@@ -54,7 +60,12 @@ if (typeof electron === 'string') {
     let preparations = 0;
     ipcMain.handle('attachment-materialize', (event, input) => {
       assert.equal(event.sender, win.webContents);
-      assert.deepEqual([input.ref, input.taskId, input.attachmentId], [ref, page.taskId, page.id]);
+      assert.deepEqual([input.ref, input.taskId], [ref, page.taskId]);
+      if (input.attachmentId === 'pdf') {
+        assert.equal(input.pdfAttachmentId, 'pdf');
+        return { ok: true, artifacts: [{ attachmentId: 'pdf', path: pdfFile, name: 'report.pdf' }] };
+      }
+      assert.equal(input.attachmentId, page.id);
       preparations++;
       return { ok: true, artifacts: [{ attachmentId: page.id, path: file, name: page.filename, size: page.size }] };
     });
@@ -97,17 +108,38 @@ if (typeof electron === 'string') {
         await verifyOpened('reopen original task card from ' + target);
       }
       assert.equal(preparations, 1, 'reopening reuses the authorized local file');
-    } catch (error) {
-      console.error('Task preview diagnostics', { preparations, state: await js('ChatWorkbench.state()'),
-        views: win.contentView.children.map(view => ({ visible: view.getVisible(), title: view.webContents.getTitle() })) });
-      throw error;
+      fs.writeFileSync(pdfFile, await win.webContents.printToPDF({}));
+      await js(`(() => {
+        const pdf = { artifactId: 'task-output:task:pdf', taskId: 'task', attachmentId: 'pdf', name: 'report.pdf', primary: true };
+        ChatWorkbench.render(document.querySelector('#chat'), { status: 'idle', messages: [] }, [pdf]);
+        if (!ChatWorkbench.openOutput(pdf.artifactId)) throw Error('PDF output card was not resolved');
+      })()`);
+      await until(async () => {
+        const view = win.contentView.children.find(item => item.getVisible() && item.webContents.getURL().endsWith('/report.pdf'));
+        return view?.webContents.mainFrame.framesInSubtree.some(frame =>
+          frame.url.startsWith('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/')) &&
+          view.webContents.getTitle() === 'requirement-preview.html';
+      }, 'authorized PDF embedded in the conversation preview');
+      fs.writeFileSync(pngFile, electron.nativeImage.createFromBitmap(Buffer.alloc(4 * 9 * 5, 255), { width: 9, height: 5 }).toPNG());
+      for (const file of [
+        { artifactId: 'indexed-chart', taskId: 'old', attachmentId: 'missing', remoteMaterialized: true },
+        { path: pngFile }
+      ]) {
+        await js(`(() => {
+          const file = { ...${JSON.stringify(file)}, name: 'chart.png', primary: true };
+          ChatWorkbench.render(document.querySelector('#chat'), { status: 'idle', messages: [] }, [file]);
+          if (!ChatWorkbench.openOutput(file.artifactId || file.path)) throw Error('PNG card was not resolved');
+        })()`);
+        await until(() => js('document.querySelector(".ncw-image img")?.naturalWidth === 9'), 'PNG in right pane');
+        await click('[data-wb-close]');
+      }
     } finally {
       ipcMain.removeHandler('attachment-materialize');
       win.destroy();
     }
   }
   app.whenReady().then(check).then(() => {
-    console.log('Passed: closing the task preview and clicking the original saved card reopens its HTML.');
+    console.log('Passed: closing the task preview and clicking the original saved card reopens its HTML. Task PDFs and local PNGs open in the right pane.');
   }).catch(error => {
     console.error(error); process.exitCode = 1;
   }).finally(async () => {

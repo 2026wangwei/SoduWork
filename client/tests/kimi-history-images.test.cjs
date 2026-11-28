@@ -84,6 +84,30 @@ test('first native read recovers the exact private screenshot without its worksp
   assert.deepEqual(Buffer.from(result.data, 'base64'), f.png);
 });
 
+test('an old malformed gallery stores the verified Kimi original for an unpatched reader', async t => {
+  const f = await fixture(t);
+  const fence = String.fromCharCode(96).repeat(3);
+  const reply = 'Summary\nsoduwork-media' + fence + 'json' +
+    JSON.stringify({ type: 'gallery', items: [{ url: f.relative }] }) + '\n' + fence + '\n\n**Checks**';
+  f.seq.at(-1).text = reply;
+  f.wire.find(item => item.event?.type === 'content.part').event.part.text = reply;
+  f.writeWire();
+  const data = await f.api.saved(f.row.id, { refresh: true });
+  assert.equal(data.snapshot.messages.at(-1).blocks.at(-1).text, reply);
+  fs.unlinkSync(f.media); fs.unlinkSync(f.wireFile);
+  const released = process.env.SODUWORK_STOCK_CLIENT || path.join(__dirname, '..');
+  const stock = require(path.join(released, 'main/conversation/artifact-versions.cjs'));
+  const [turn] = await stock.readers(f.profile, f.row.id, data.localArtifactHistory.archive, () => {});
+  assert.equal(turn.userMessageIndex, 0);
+  const [item] = turn.reader.snapshot().items;
+  assert.deepEqual(fs.readFileSync(item.path), f.png);
+  const { declaredImages } = require('../main/conversation/kimi-history-images.cjs');
+  for (const example of [fence + 'markdown\n' + reply + '\n' + fence,
+    reply.replace('soduwork-media', '    soduwork-media'), reply.replace(f.relative, '../other.png')]) {
+    assert.equal(declaredImages(example).size, 0);
+  }
+});
+
 test('a restored, completed Kimi segment archive wins over an earlier read of the same image in previews and exports', async t => {
   const f = await fixture(t);
   const data = await f.api.saved(f.row.id, { refresh: true });

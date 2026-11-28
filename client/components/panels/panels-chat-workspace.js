@@ -192,6 +192,7 @@
     // not navigable preview URLs; Hub intentionally serves HTML as attachment downloads,
     // so direct navigation would open a save dialog.
     if (file.path) return false;
+    if (links.indexedPreview(file)) return false;
     const kind = previewKind(file);
     return kind === 'web' || kind === 'pdf';
   }
@@ -202,10 +203,11 @@
   function canAutoPreview(file) {
     // Automatic output handling stays inside the right pane. Other results
     // remain conversation cards until the user chooses an explicit file action.
+    if (previewKind(file) === 'pdf' && !file.path && !links.indexedPreview(file)) return false;
     return !WB.historyPreview && (!file.archivedReadOnly || currentTurnOriginal(file)) && !requiresExternalOpen(file, previewKind(file));
   }
   function requiresExternalOpen(file, kind) {
-    return kind === 'external' || (kind === 'pdf' && !((WB.historyPreview || file.archivedReadOnly) ? file.artifactId : file.path));
+    return kind === 'external' || (kind === 'pdf' && !links.indexedPreview(file) && (!file.path || WB.historyPreview || file.archivedReadOnly));
   }
   async function openExternalFile(file) {
     const current = previewOwner();
@@ -243,27 +245,11 @@
   function openPendingCloud(file, activate = true, automatic = false) {
     return Boolean(file?.cloudPending && links?.materialize && materializePreview(file, links.materialize, activate, automatic));
   }
-  function openTaskPdfPreview(file) {
-    // Canvas renderers disable plugins, so PDFs would download instead of displaying.
-    // Use the native attachment-preview window, which enables PDF plugin support.
-    if (!links?.taskAttachment || typeof global.soduWorkAPI?.previewAttachment !== 'function') return false;
-    const current = previewOwner();
-    links.taskAttachment(file, global.SoduWorkAPI).then(row => {
-      if (!current()) return;
-      if (!row || typeof row.url !== 'string') throw Error('成果地址无效');
-      return global.soduWorkAPI.previewAttachment({ url: row.url, filename: row.filename || file.name || '成果.pdf' });
-    }).then(result => {
-      if (result && result.ok === false && !result.canceled) throw Error(result.reason || '无法预览这份成果');
-    }).catch(error => { if (current() && typeof global.petSay === 'function') global.petSay(error.message || '无法预览这份成果'); });
-    return true;
-  }
   function openTaskPreview(file, activate = true, automatic = false) {
-    // Materialize web deliverables in the conversation workspace through authorized main-process downloads
-    // with SHA-256 verification, then open local files rather than navigating to Hub attachment URLs.
+    // The main process verifies and caches these attachments before opening the right pane.
     if (!file || !file.taskId || !file.attachmentId || file.path) return false;
     const kind = previewKind(file);
-    if (kind === 'pdf') return openTaskPdfPreview(file);
-    if (kind !== 'web' || !links?.materializeTask) return false;
+    if (!['web', 'pdf'].includes(kind) || !links?.materializeTask) return false;
     return materializePreview(file, links.materializeTask, activate, automatic);
   }
   function openFile(file, activate, automatic = false) {
@@ -503,7 +489,8 @@
     if (!file) return false;
     let kind = previewKind(file);
     if (kind === 'external' && hint?.change) kind = 'text';
-    if (kind === 'external' || (kind === 'pdf' && !file.path)) return false;
+    if (kind === 'pdf') return openOutput(fileKey(file));
+    if (kind === 'external') return false;
     /* Tool cards open HTML and similar files as source/diff, not web previews. */
     if (kind === 'web') kind = 'text';
     WB.manualClosed = false;
@@ -664,7 +651,7 @@
       slot.setAttribute('data-native-preview-tab', tab.id);
       if (!tab.nativeReady) {
         if (tab.reloadNative) payload.reload = true;
-        if ((tab.kind === 'web' || ((WB.historyPreview || tab.file?.archivedReadOnly) && tab.kind === 'pdf')) && tab.file.artifactId) {
+        if ((tab.kind === 'web' || tab.kind === 'pdf') && links.indexedPreview(tab.file)) {
           Object.assign(payload, { kind: 'artifact', artifactId: tab.file.artifactId });
         } else if (tab.kind === 'web' || tab.kind === 'pdf') {
           Object.assign(payload, { kind: 'file', target: tab.file.path });
