@@ -255,30 +255,21 @@
         if (result.ok === false) throw new Error('无法读取会话记录，请重试');
         history = result.chats || [];
       }
-    } else if ((!payload.acceptanceSession || probeExecution) && !payload.chatId && hubTurnId) {
-      /*
-       * Hub conversation receipts do not guarantee a local archive. Probe locally before
-       * opening; when absent, use the task-details approval card backed by Hub data.
-       */
+    } else if (payload.source === 'approval' && payload.focusApproval && !payload.chatId &&
+        !payload.acceptanceSession && !probeExecution && hubTurnId && !activeExecutionSession) {
+      // A cross-device approval can be handled in task details. Ordinary requirement
+      // navigation opens the recorded ID directly, including archives outside the
+      // sidebar's first page. Its controller handles a confirmed missing archive.
       const sessions = global.soduWorkAPI?.conversationSession || global.soduWorkAPI?.piSession;
       if (sessions?.history) {
         try {
           const result = await sessions.history();
           if (result && result.ok !== false) {
             history = result.chats || [];
-            if (!(history || []).some(row => row.id === hubTurnId) && !activeExecutionSession) {
-              payload.chatId = '';
-              /*
-               * For ordinary review fallback, remove both chatId and the Hub turn receipt so resolve
-               * cannot restore an unavailable conversation ID. Preserve rework receipts for
-               * controller-managed recovery.
-               */
-              if (payload.source !== 'rework' && !probeExecution) {
-                task = { ...task, workRouting: { ...(task.workRouting || {}), conversationTurn: null } };
-              }
-            }
+            if (!history.some(row => row.id === hubTurnId))
+              task = { ...task, workRouting: { ...task.workRouting, conversationTurn: null } };
           }
-        } catch (_) { /* Let normal navigation report the actual error when archive probing fails. */ }
+        } catch (_) { /* The exact archive open reports lookup failures. */ }
       }
     }
     if (seq !== generation) return false;

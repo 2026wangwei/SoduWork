@@ -319,6 +319,8 @@ function create({ app, identityOf, session, accountHistory, sharedHistory, newCw
     return { ...row, id };
   }
   async function resolve(id, captured) {
+    if (!session.findBySessionId?.(id) && await sharedHistory?.stoppedRunnerRequirement?.(id))
+      throw Error('本机 Runner 未运行，当前需求会话仅供查看');
     return ownedRow(id, captured, await nativeRow(id, captured));
   }
   function owner(record, captured) {
@@ -447,6 +449,14 @@ function create({ app, identityOf, session, accountHistory, sharedHistory, newCw
       }
       if (indexed) id = sessionId(indexed.id);
       const retained = indexed && (indexed.deviceHistory || indexed.deviceTransferId || indexed.historyContentState === 'missing');
+      if (retained && !session.findBySessionId?.(id)) {
+        const saved = await sharedHistory?.stoppedRunnerRequirement?.(id);
+        if (saved) {
+          owner(saved.record, captured); await guard(captured);
+          return { ok: true, sessionId: id, cards: saved.record.cards.map(card => restoredRequirementCard(card, captured)),
+            readOnly: true, workOnly: false, draftSelection: null, draftSelectionRevision: 0 };
+        }
+      }
       let native;
       try {
         native = await nativeRow(id, captured, retained ? { nativeOnly: true, metadataOnly: true } : undefined);
@@ -600,4 +610,4 @@ function install({ ipcMain, BrowserWindow, ...options }) {
   }
   return controller;
 }
-module.exports = { protection, protectionSnapshot, create, install, normalizeCard, visibleHistory, assertCreatedTask, location, ENTRY_TYPE, MAX_FILES, MAX_FILE_BYTES, MAX_STORE_BYTES };
+module.exports = { diskRecord, protection, protectionSnapshot, create, install, normalizeCard, visibleHistory, assertCreatedTask, location, ENTRY_TYPE, MAX_FILES, MAX_FILE_BYTES, MAX_STORE_BYTES };

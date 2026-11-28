@@ -190,7 +190,15 @@ function matchesLegacyRunner(id, adapterId, snapshot, messages, tools, candidate
   const sameProjection = (item, old) => canonicalJson(old.sourceAgent ?
     { ...item, ...nativeSource.fields(item, adapterId) } : item) === canonicalJson(old);
   if (messages.length !== oldMessages.length || tools.length !== oldTools.length ||
-      messages.some((item, i) => !sameProjection(item, oldMessages[i]))) return false;
+      messages.some((item, i) => {
+        const old = oldMessages[i];
+        // Older Runner checkpoints omitted the host's per-turn plugin badges.
+        if (item.role === 'user' && item.plugins && old.plugins === undefined) {
+          const { plugins, ...legacy } = item;
+          return !sameProjection(legacy, old);
+        }
+        return !sameProjection(item, old);
+      })) return false;
   const offset = oldMessages.length ? snapshot.messages.indexOf(oldMessages[0]) : oldTools[0]?.after || 0;
   for (const [index, item] of tools.entries()) {
     const old = { ...oldTools[index] }, current = { ...item, id: prefix + item.id, after: offset + item.after };
@@ -283,7 +291,8 @@ async function runner(runtime, id, adapterId, guard, previousToolReceipts, previ
       }
       if (item.kind === 'user') {
         pendingCalls.clear();
-        messages.push({ id: id + ':' + item.seq, role: 'user', text,
+        const plugins = require('./plugin-badges').publicBadges(item.plugins);
+        messages.push({ id: id + ':' + item.seq, role: 'user', text, ...(plugins.length ? { plugins } : {}),
           sentAt: item.sentAt || item.at, attachments: item.attachments || [], submissionId: item.submissionId || '' });
       } else if (archivedPlan || item.kind === 'step' && item.tool === 'Plan') {
         if (text) messages.push({ id: id + ':' + item.seq, role: 'assistant', blocks: [{ kind: 'text', text }], done: true });

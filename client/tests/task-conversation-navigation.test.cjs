@@ -461,20 +461,17 @@ test('archive probe failure keeps the legacy path so the real error surfaces',as
  assert.equal(f.calls[0].payload.chatId,'original');
 });
 
-test('cross-device non-approval navigation falls back to a fresh chat, never the ghost id',async()=>{
- const f=fixture({soduWorkAPI:{conversationSession:{history:async()=>({chats:[]})}}});
- await f.api.open('req-1','重构导出报表',{source:'task-list'});
- assert.equal(f.calls.length,1);
- assert.equal(f.calls[0].payload.chatId,'');
-});
-
-test('进行中需求的执行会话找不到时明确回退到新会话', async () => {
- const f=fixture({
-  SoduWorkAPI:{getTask:async id=>({id,status:'doing',workRouting:{conversationTurn:{conversationId:'missing-execution'}}})},
-  soduWorkAPI:{conversationSession:{history:async()=>({chats:[]})}},
+test('repeated ordinary requirement opens use the recorded execution even when recent history changes', async () => {
+ const rows = Array.from({length: 50}, (_, index) => ({id: 'recent-' + index}));
+ let reads = 0;
+ const f = fixture({
+  SoduWorkAPI: {getTask: async id => ({id, status: 'doing', workRouting: {conversationTurn: {conversationId: 'execution'}}})},
+  soduWorkAPI: {conversationSession: {history: async () => ({chats: reads++ % 2 ? rows : [{id: 'execution'}, ...rows]})}},
  });
- await f.api.open('req-1','继续处理',{source:'task-live',navigation:true});
- assert.equal(f.calls.length,1);
- assert.equal(f.calls[0].payload.chatId,'');
- assert.equal(f.calls[0].payload.forceNew,true);
+ for (const options of [{source: 'task-list'}, {source: 'requirement', navigation: true}, {}]) {
+  assert.equal(await f.api.open('req-1', '继续处理', options), true);
+  assert.equal(f.calls.at(-1).payload.chatId, 'execution');
+  assert.notEqual(f.calls.at(-1).payload.forceNew, true);
+ }
+ assert.equal(reads, 0);
 });

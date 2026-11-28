@@ -484,4 +484,4 @@ async function exportCopy(options) {
   return copies.find(copy => copy.versionId === version.versionId);
 }
 
-module.exports = { dependencies, record, pinLegacyDeliveries, list, readers, exportCopy, exportTurn };
+module.exports = { dependencies, record, unassignedTurn, pinLegacyDeliveries, list, readers, exportCopy, exportTurn };

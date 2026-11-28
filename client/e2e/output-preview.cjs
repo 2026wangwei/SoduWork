@@ -26,8 +26,8 @@ async function run(){
   const artifacts=[['image','preview.png','image'],['markdown','report.md','document'],['second','second.md','document'],['source','source.js','file']]
     .map(([artifactId,name,kind])=>({artifactId,name,relative:name,kind,path:path.join(work,name),at:1,primary:true,changedInTurn:artifactId==='image',size:fs.statSync(path.join(work,name)).size}));
   const fixture={cwd:work,outputSnapshot:()=>({delivery:{items:artifacts}})};
-  require('../main/agent-runtime/pi-session-bridge').get=ref=>ref==='preview-fixture'?fixture:null;
-  require('../main/pi-session/ipc').install({app,ipcMain,BrowserWindow,identityOf:()=>null,capabilityGrantsOf:()=>[]});
+  require('../main/pi-session/artifact-ipc').install({app,ipcMain,BrowserWindow,workDir:()=>work,
+    session:{get:ref=>ref==='preview-fixture'?fixture:null}});
   server=require('node:http').createServer((req,res)=>{
     const url=new URL(req.url,'http://fixture');
     const image=url.pathname.endsWith('image1234'),name=image?'preview.png':'report.md';

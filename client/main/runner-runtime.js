@@ -390,9 +390,11 @@ function _consumeRunnerLines(lines, logPath, child) {
   }
 }
 
+function hasLocalTransport() { return Boolean(_proc && !_proc.killed && _proc.stdin?.writable); }
+
 function rpc(op, payload = {}, timeoutMs = 30000) {
   const child = _proc;
-  if (!child || child.killed || !child.stdin || !child.stdin.writable) {
+  if (!hasLocalTransport()) {
     return Promise.reject(Object.assign(new Error(_lastError || 'Runner is not running'), {
       code: 'RUNNER_NOT_RUNNING',
     }));
@@ -677,7 +679,7 @@ function install({ app, ipcMain, identityOf, sessionOf, canConnect, localOwnerOf
 }
 
 module.exports = {
-  install, identity, pauseForHubChange, capabilityGrants, rpc, setMobileCapabilities,
+  install, identity, pauseForHubChange, capabilityGrants, hasLocalTransport, rpc, setMobileCapabilities,
   _clean, _stored, _grants, _migrateRaw, _mergeRaw, _prepareWorkRoot, _runnerEnv, _bundledPi,
   _bundledShell, _skillRoots,
   CAPABILITY_KEYS, CAPABILITY_GRANT_VERSION, DEFAULT_CAPABILITY_GRANTS, RUNNER_ENV_DENY,

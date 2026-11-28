@@ -22,7 +22,7 @@ const attachment = (id, filename, bytes, extra = {}) => ({ id, taskId: 'task', f
   url: '/attachments/' + id + '?ticket=fixture', ...extra });
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-deliverable-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-deliverable-')));
   const cwd = path.join(root, 'project'), userData = path.join(root, 'profile');
   await fs.mkdir(cwd); await fs.mkdir(userData);
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -95,6 +95,30 @@ test('desktop attachment IPC uses the authenticated device session when legacy s
   assert.equal(result.artifacts.length, 3);
   assert.ok(f.requests.every(request => request.headers.authorization === 'Device fixture-session'));
   assert.ok(f.requests.every(request => !request.headers['x-soduwork-secret']), 'no legacy secret required');
+});
+
+test('older same-name task PDFs materialize independently by attachment ID', async t => {
+  const f = await fixture(t);
+  for (const [day, id] of ['older', 'newer'].entries()) {
+    f.bytes.set(id, '%PDF-1.7 ' + id);
+    f.rows.push(attachment(id, 'report.pdf', f.bytes.get(id), { evidenceMeta: { identifier: id },
+      createdAt: '2026-11-0' + (day + 1) + 'T00:00:00Z' }));
+  }
+  const open = pdfAttachmentId => f.controller.materialize({ ref: 'ref', taskId: 'task', pdfAttachmentId });
+  const [older, newer] = await Promise.all([open('older'), open('newer')]);
+  assert.notEqual(older.artifacts[0].path, newer.artifacts[0].path);
+  for (const [row, id] of [[older, 'older'], [newer, 'newer']]) {
+    assert.deepEqual(row.artifacts.map(file => file.attachmentId), [id]);
+    assert.equal(await fs.readFile(row.artifacts[0].path, 'utf8'), f.bytes.get(id));
+  }
+  assert.ok(f.calls.every(call => /tasks\/task\/attachments|attachments\/(?:older|newer)\?/.test(call)));
+  const access = require('../main/pi-session/task-attachment-access.cjs');
+  const check = result => access.authorize(f.config.app, f.state.handle, 'ref', result.artifacts[0].path);
+  assert.ok(await check(older)); assert.ok(await check(newer));
+  f.rows.splice(f.rows.findIndex(row => row.id === 'older'), 1);
+  await assert.rejects(open('shot'), /暂无/);
+  await assert.rejects(check(older));
+  assert.ok(await check(newer));
 });
 
 test('missing login session is rejected before any attachment request', async t => {

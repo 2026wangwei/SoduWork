@@ -183,6 +183,8 @@ if (typeof electron === 'string') {
         return delivery.querySelectorAll('[data-install-plugin-draft]').length;
       };
       document.getElementById('delivery').onclick = event => {
+        const picker = event.target.closest('[data-choose-history-package]');
+        if (picker) return openConversationPluginDraft(picker.dataset.chooseHistoryPackage, 'choose-history-package', picker);
         const button = event.target.closest('[data-install-plugin-draft]');
         if (button) openConversationPluginDraft(button.dataset.pluginDraftRef, button.dataset.installPluginDraft, button);
       };
@@ -331,6 +333,35 @@ if (typeof electron === 'string') {
     assert.notDeepEqual(originalBytes, fs.readFileSync(packagePath));
     report.cases.push('The original history card reads the exact archived package after the live workspace changes');
     await require('./fixtures/created-plugin-history.cjs').verify({ app, root, activate, click, js, until, report });
+    assert.equal(await activate('history-unrecorded'), 0);
+    const choose = electron.dialog.showOpenDialog;
+    try {
+      const folder = path.join(root, 'workspaces', 'history-unrecorded');
+      electron.dialog.showOpenDialog = async options => {
+        assert.equal(options.defaultPath, folder);
+        return { canceled: false, filePaths: [path.join(folder, 'delivery', 'soduwork-plugin-draft.json')] };
+      };
+      await click('[data-choose-history-package]');
+      await until(() => js("!document.getElementById('capModalLayer')?.hidden && !!document.getElementById('capLocalOnly')"), 'chosen historical package preflight');
+      assert.equal(require('../main/personal-plugins')._read(app).plugins.some(plugin => plugin.key === 'history-unrecorded'), false);
+      await click('#capLocalCancel');
+      await until(() => js("document.getElementById('capModalLayer').hidden"), 'leave recovered package uninstalled');
+      fs.renameSync(folder, folder + '-removed');
+      if (process.env.SODUWORK_STOCK_CLIENT) {
+        const renderer = path.join(process.env.SODUWORK_STOCK_CLIENT, 'components/panels/chat-output-links.js');
+        await js(fs.readFileSync(renderer, 'utf8') + '\nvoid 0;');
+      }
+      assert.equal(await activate('history-unrecorded'), 1);
+      assert.equal(await js("document.querySelector('[data-install-plugin-draft]').textContent"), '检查并安装');
+      assert.equal(await js("document.querySelector('[data-choose-history-package]') === null"), true);
+      await click('[data-install-plugin-draft]');
+      await until(() => js("!document.getElementById('capModalLayer')?.hidden && !!document.getElementById('capLocalOnly')"), 'standard archived package preflight');
+      report.cases.push('After canceling installation and removing its workspace, the confirmed package reopens with the standard Check and Install button');
+      await click('#capLocalOnly');
+      await until(() => js("!!document.getElementById('capLocalDone')"), 'confirmed recovered package installation');
+      assert.ok(require('../main/personal-plugins')._read(app).plugins.some(plugin => plugin.key === 'history-unrecorded'));
+      report.cases.push('A legacy authoring conversation without resource receipts opens the native chooser and installs only after explicit confirmation');
+    } finally { electron.dialog.showOpenDialog = choose; }
     report.mutations = await mutations();
     assert.deepEqual(report.mutations, { imports: 2, selections: 2 });
     report.ok = true;

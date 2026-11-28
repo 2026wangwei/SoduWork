@@ -49,15 +49,25 @@ function load(file, wal) {
   const rows = new Map();
   function record(id, route, conversationId) {
     const item = rows.get(id) || { route, conversationId };
+    // The oldest writer dropped the previous conversationId while enqueueing a
+    // newer revision. Its confirmed directory entry supplies the immutable ID.
+    if (item.awaitDirectoryId && conversationId) {
+      item.conversationId = conversationId;
+      item.awaitDirectoryId = false;
+    }
     if (route !== item.route || conversationId !== item.conversationId) item.invalid = true;
     rows.set(id, item);
     return item;
   }
   try {
     db.exec('PRAGMA trusted_schema=OFF; BEGIN');
-    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('checkpoints','directory')").all();
-    if (tables.length !== 2) return rows;
-    for (const r of fields(db, 'checkpoints', 'key', 'sourceSessionId hub ownerKey clientId conversationId legacy deleted sourceEpoch sourceRevision ackedRevision contentDigest ackedDigest')) {
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name));
+    if (!tables.has('directory') || !tables.has('checkpoints')) return rows;
+    const queued = tables.has('jobs') && db.prepare(`SELECT 1 FROM jobs WHERE id=? AND scope=? AND source=? AND revision=?
+      AND json_extract(value,'$.sessionKey')=? AND json_extract(value,'$.body.deleted')=0
+      AND json_extract(value,'$.body.sourceSessionId')=? AND json_extract(value,'$.body.sourceEpoch')=?
+      AND json_extract(value,'$.body.sourceRevision')=?`);
+    for (const r of fields(db, 'checkpoints', 'key', 'sourceSessionId hub ownerKey clientId conversationId legacy deleted sourceEpoch sourceRevision ackedRevision contentDigest ackedDigest digest')) {
       const route = [r.hub, r.ownerKey, r.clientId];
       const item = record(r.sourceSessionId, JSON.stringify(route), r.conversationId);
       if (r.key !== JSON.stringify([...route, r.sourceSessionId])) {
@@ -69,19 +79,34 @@ function load(file, wal) {
           if (typeof keyedId === 'string') record(keyedId, '', '').invalid = true;
         }
       }
-      if (r.legacy !== 0 || r.deleted ||
-          r.sourceEpoch !== (r.sourceSessionId + ':desktop').slice(0, 180) || !Number.isSafeInteger(r.ackedRevision) ||
-          r.ackedRevision <= 0 || r.sourceRevision !== r.ackedRevision || !/^[a-f0-9]{64}$/.test(r.ackedDigest) ||
-          r.ackedDigest !== r.contentDigest || !r.conversationId?.startsWith('acct-')) item.invalid = true;
+      if (r.legacy !== 0 || r.deleted || r.sourceEpoch !== (r.sourceSessionId + ':desktop').slice(0, 180) ||
+          !Number.isSafeInteger(r.ackedRevision) || r.ackedRevision <= 0 || !Number.isSafeInteger(r.sourceRevision) ||
+          r.sourceRevision < r.ackedRevision || !/^[a-f0-9]{64}$/.test(r.contentDigest)) item.invalid = true;
+      if (r.sourceRevision === r.ackedRevision) {
+        if (r.ackedDigest !== r.contentDigest || !r.conversationId?.startsWith('acct-')) item.invalid = true;
+      } else {
+        // A pending write alone never proves ownership. Require the actual
+        // queued update as well as the old ACK and its exact directory entry.
+        const jobId = r.key + ':' + r.sourceRevision + ':' + String(r.digest).slice(0, 12);
+        if (!/^[a-f0-9]{64}$/.test(r.digest) || !queued || !queued.get(jobId, JSON.stringify(route),
+            JSON.stringify([...route, r.sourceSessionId, r.sourceEpoch]), r.sourceRevision, r.key,
+            r.sourceSessionId, r.sourceEpoch, r.sourceRevision)) item.invalid = true;
+        item.pending = true;
+        item.awaitDirectoryId = !r.conversationId;
+      }
       item.ack = r.ackedRevision;
     }
     for (const r of fields(db, 'directory', 'scope, id AS directoryId', 'id sourceSessionId sourceClientId canView deleted sourceRevision')) {
       const [hub, account, viewer] = JSON.parse(r.scope);
       const item = record(r.sourceSessionId, JSON.stringify([hub, account, r.sourceClientId]), r.id);
-      if (r.directoryId !== r.id || r.deleted !== 0) item.invalid = true;
+      if (r.directoryId !== r.id || !r.id?.startsWith('acct-') || r.deleted !== 0) item.invalid = true;
       if (viewer === r.sourceClientId) {
         if (r.canView !== 1) item.invalid = true;
-        item.confirmed = Number.isSafeInteger(r.sourceRevision) && r.sourceRevision >= item.ack;
+        // The Hub keeps one row per account, source device and native session.
+        // Its directory may still describe an earlier confirmed turn when the
+        // writer gets another ACK and queues its next update.
+        item.confirmed = item.ack > 0 && Number.isSafeInteger(r.sourceRevision) &&
+          r.sourceRevision > 0 && (!item.pending || r.sourceRevision <= item.ack);
       }
     }
     return rows;
@@ -95,29 +120,36 @@ function create(app) {
   function revision() {
     try { return databaseState(root, file)?.stamp || ''; } catch (_) { return ''; }
   }
-  function getHub(id, owner, identity, aliases = []) {
+  function evidence(ids, owner, identity) {
     try {
-      if (runtime.scope(identity) !== owner) return '';
+      if (runtime.scope(identity) !== owner) return { status: 'unverified' };
       const hub = new URL(identity.hub).origin;
       const route = JSON.stringify([hub, accountScopeKey(identity), identity.clientId]);
       const state = databaseState(root, file);
-      if (!state) return '';
+      if (!state) return { status: fs.existsSync(file) ? 'unverified' : 'absent', confirmed: [] };
       if (!rows || stamp !== state.stamp) {
         const next = load(file, state.wal);
-        if (revision() !== state.stamp) return '';
+        if (revision() !== state.stamp) return { status: 'unverified' };
         rows = next;
         stamp = state.stamp;
       }
-      const source = rows.get(id);
-      if (!source?.confirmed || source.invalid || source.route !== route) return '';
-      for (const alias of aliases) {
-        const entry = rows.get(alias);
-        if (entry && (entry.invalid || entry.route !== route)) return '';
+      const confirmed = [];
+      let found = false;
+      for (const id of ids) {
+        const entry = rows.get(id);
+        if (!entry) continue;
+        found = true;
+        if (entry.invalid || entry.route !== route) return { status: 'conflict' };
+        if (entry.confirmed) confirmed.push(id);
       }
-      return hub;
-    } catch (_) { return ''; }
+      return { status: confirmed.length ? 'verified' : found ? 'unverified' : 'absent', confirmed, hub };
+    } catch (_) { return { status: 'unverified' }; }
   }
-  return { revision, getHub };
+  function getHub(id, owner, identity, aliases = []) {
+    const result = evidence(new Set([id, ...aliases]), owner, identity);
+    return result.confirmed?.includes(id) ? result.hub : '';
+  }
+  return { revision, getHub, evidence };
 }
 
 const instances = new WeakMap();

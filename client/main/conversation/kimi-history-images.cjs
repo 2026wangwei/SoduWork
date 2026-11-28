@@ -22,9 +22,24 @@ async function read(root, file, limit) {
 function declaredImages(text) {
   const paths = new Set();
   if (typeof text !== 'string' || !text.includes('soduwork-media')) return paths;
-  for (const match of text.matchAll(/^```soduwork-media[^\S\r\n]*\r?\n([^\n]{1,16384})\r?\n```[^\S\r\n]*$/gm)) {
+  let fence, contents;
+  for (const line of text.split(/\r?\n/)) {
+    const delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence) {
+      const legacy = /^ {0,3}soduwork-media[ \t]*```json[ \t]*(\{.*)?$/.exec(line);
+      if (!legacy && !delimiter) continue;
+      fence = legacy ? '```' : delimiter[1];
+      contents = legacy ? legacy[1] || '' : /^soduwork-media[ \t]*$/.test(delimiter[2]) ? '' : null;
+      continue;
+    }
+    if (!delimiter || delimiter[1][0] !== fence[0] || delimiter[1].length < fence.length || delimiter[2].trim()) {
+      if (contents !== null) contents = contents.length + line.length < 16384 ? contents + '\n' + line : null;
+      continue;
+    }
+    fence = null;
+    if (contents === null || contents.length > 16384) continue;
     let block;
-    try { block = JSON.parse(match[1]); } catch { continue; }
+    try { block = JSON.parse(contents); } catch { continue; }
     if (!['image', 'gallery'].includes(block?.type) || !Array.isArray(block.items) || !block.items.length ||
         block.items.length > 100 || block.type === 'image' && block.items.length !== 1 ||
         Object.keys(block).some(key => !['type', 'items'].includes(key))) continue;

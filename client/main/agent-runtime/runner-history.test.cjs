@@ -50,7 +50,7 @@ test('active and retired providers share inventory while retaining only eligible
   ]);
   assert.equal(f.calls.length, 1);
   assert.equal(claude.ok, true);
-  assert.deepEqual(claude.chats, [{ id: 'old-claude', path: 'old-claude', adapterId: 'claude', runtimeRetired: true,
+  assert.deepEqual(claude.chats, [{ id: 'old-claude', path: 'old-claude', adapterId: 'claude', nativeHistory: true, runtimeRetired: true,
     cwd: 'fixture', title: 'Saved chat', createdAt: 11000, at: 22000, count: 4, state: 'idle' }]);
   assert.deepEqual(planner.chats.map(row => row.id), ['old-planner']);
   assert.deepEqual(current.chats.map(row => row.id), ['current']);

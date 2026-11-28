@@ -2139,9 +2139,10 @@ async function createRunnerHandle(request, defaults, initialSession) {
       return recoveredTasks.delete(id);
     },
     historyRow(snapshot) {
+      const nativeSessionStarted = state.started || taskJournal.nativeHistoryObserved;
       return { ...taskBindings.view(), id: runnerRef, adapterId, title: state.title ||
         (state.goal ? _title(state.goal) : ''),
-        nativeSessionStarted: state.started || taskJournal.nativeHistoryObserved,
+        nativeHistory: nativeSessionStarted, nativeSessionStarted,
         nativeDispatchId: predictedRef === runnerRef ? dispatchId : '',
         usedHarnesses: require('../conversation/used-harnesses').fromSnapshot(state, adapterId),
         cwd, at: state.updatedAt, count: state.messages.length, state: snapshot?.status || (state.pluginGenerationActive && state.status === 'idle' ? 'streaming' : state.status) };
@@ -2504,7 +2505,7 @@ function createRunnerRuntimeAdapter(options) {
   const isChat = row => row.cli === adapterId && /^chat-/.test(String(row.taskId || ''));
   async function historyRow(row, metadataOnly = false) {
     return {
-      id: row.ref, path: row.ref, adapterId,
+      id: row.ref, path: row.ref, adapterId, nativeHistory: true,
       ...(!metadataOnly ? { usedHarnesses: require('../conversation/used-harnesses').merge([adapterId],
         await taskOutputJournal.usedHarnesses(opts.app, row.ref).catch(() => [])) } : {}),
       cwd: row.workDir || '', title: row.title || displayName + ' 工作会话',

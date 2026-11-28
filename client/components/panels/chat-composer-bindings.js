@@ -896,6 +896,11 @@ function _bind(el) {
       const libraryBundle = e.target.closest('[data-library-bundle]');
       if (libraryBundle) { void global.LibraryTransfer?.downloadBundle(libraryBundle); return; }
       if (librarySave) { if (!librarySave.disabled) void global.LibraryTransfer?.saveDecorated(librarySave); return; }
+      const picker = e.target.closest('[data-choose-history-package]');
+      if (picker) {
+        void global.openConversationPluginDraft?.(picker.dataset.chooseHistoryPackage, 'choose-history-package', picker);
+        return;
+      }
       const pluginDraft = e.target.closest('[data-install-plugin-draft]');
       if (pluginDraft) {
         if (typeof global.openConversationPluginDraft === 'function') {

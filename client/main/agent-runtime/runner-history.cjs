@@ -25,7 +25,7 @@ function createRunnerHistoryProvider({ app, adapterId, runnerRuntime: runtime = 
     typeof row.taskId === 'string' && row.taskId.startsWith('chat-');
   const failure = error => ({ ok: false, chats: [], reason: String(error?.message || error) });
   async function historyRow(row, metadataOnly = false) {
-    return { id: row.ref, path: row.ref, adapterId, runtimeRetired: true,
+    return { id: row.ref, path: row.ref, adapterId, nativeHistory: true, runtimeRetired: true,
       ...(!metadataOnly ? { usedHarnesses: harnesses.merge([adapterId],
         await taskOutputJournal.usedHarnesses(app, row.ref).catch(() => [])) } : {}),
       cwd: row.workDir || '', title: row.title || RETIRED_RUNTIMES[adapterId] + ' 工作会话',

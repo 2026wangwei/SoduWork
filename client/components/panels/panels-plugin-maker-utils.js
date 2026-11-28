@@ -151,6 +151,8 @@
       const result = await api.pluginDraft(ref, target);
       if (!isCurrent()) return;
       if (!result || !result.ok) throw Error(result && result.reason || '草稿读取失败');
+      if (result.canceled) return;
+      if (result.installed) { ctx.say('这个包已经安装'); return; }
       if (result.kind === 'skill') {
         skillArtifact = true;
         if (!await openSkillPackage(result, ctx, isCurrent)) return;
@@ -158,7 +160,7 @@
         return;
       }
       draft = result.body;
-      checks.push({state:'passed',label:'已读取本会话的实际草稿和随包资源'}); paint();
+      checks.push({state:'passed',label:target === 'choose-history-package' ? '已读取所选草稿和随包资源' : '已读取本会话的实际草稿和随包资源'}); paint();
       const preview = await global.SoduWorkAPI.preflightPluginDraft(result.body);
       if (!isCurrent()) return;
       if(draft.template==='app'){
@@ -175,7 +177,7 @@
       const message = errorText(error);
       if (errorEl) { errorEl.textContent = message; errorEl.hidden = false; }
       checks.push({state:'failed',label:message}); paint();
-      if (report?.appendChild && global.document?.createElement) {
+      if (target !== 'choose-history-package' && report?.appendChild && global.document?.createElement) {
         const repair = global.document.createElement('button'); repair.type = 'button';
         repair.className = 'btn-mini'; repair.textContent = '立即修复';
         const repairKey = ref + '\0' + target;

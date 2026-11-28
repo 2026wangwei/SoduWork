@@ -73,12 +73,12 @@ function metadataReader(app, batch = false) {
 function classify(app, id, row, metadata) {
   const canonical = String(row.id || row.sessionId || '');
   const ids = new Set([canonical, ...(Array.isArray(row.historyAliasIds) ? row.historyAliasIds : [])].filter(Boolean));
-  const authority = [], clouds = [];
+  const authority = [], clouds = [], parents = [];
   let protectedData = Boolean(row.cloud || row.remoteProjection || row.accountProjection || row.accountConversation ||
     row.acceptanceReview || row.requirementContext || row.taskId || row.taskRef || row.activeTaskId ||
     row.taskIds?.length || row.taskBindings?.length || row.historyProtection === 'account');
   const result = (kind, invalid = false) => Object.freeze({ kind, id: canonical, ids: Object.freeze([...ids]), row,
-    authority: Object.freeze(authority), clouds: Object.freeze(clouds), invalid,
+    authority: Object.freeze(authority), clouds: Object.freeze(clouds), parents: Object.freeze(parents), invalid,
     ownership: target => ({ records: ['session-memory-bindings', 'requirement-session-context', 'conversation-runtime-segments']
       .map(directory => metadata(directory, target)).filter(Boolean), legacy: metadata(LEGACY_OWNER_DIRECTORY, target) }) });
   if (!app?.getPath || !canonical || typeof id !== 'string' || ids.size > 1001) return result('unknown', true);
@@ -91,6 +91,7 @@ function classify(app, id, row, metadata) {
       const current = pending[index];
       if (!row.cached && !row.source && !row.cloud && !row.accountProjection && !row.accountConversation && !row.remoteProjection)
         for (const parent of metadata.parents(current)) {
+          if (current === id && parent !== id) parents.push(parent);
           if (!ids.has(parent)) { ids.add(parent); pending.push(parent); }
         }
       const record = metadata('conversation-runtime-segments', current);
@@ -278,7 +279,7 @@ function nativeOwners(row) {
     throw Error('无法读取会话归属记录，请重新打开 SoduWork');
   return owners;
 }
-function assertClassifiedOwner(app, id, captured, row, options, classified) {
+function assertClassifiedOwner(app, id, captured, row, options, classified, receiptOwner = '') {
   if (!id || !captured.owner) throw Error('请先登录 SoduWork 后查看会话');
   if (nativeOwners(row).some(owner => owner !== captured.owner &&
       !runtime.scopeMatches(owner, captured.identity, captured.candidates)))
@@ -337,6 +338,7 @@ function assertClassifiedOwner(app, id, captured, row, options, classified) {
   const records = ['session-memory-bindings', 'requirement-session-context', 'conversation-runtime-segments']
     .map(directory => captured.readMetadata ? captured.readMetadata(directory, id) : saved(app, directory, id)).filter(Boolean);
   const owners = records.map(record => record.owner);
+  if (receiptOwner) owners.push(receiptOwner);
   if (row.workOwner) owners.push(row.workOwner);
   const legacy = captured.readMetadata ? captured.readMetadata(LEGACY_OWNER_DIRECTORY, id) : legacyOwner(app, id);
   if (legacy && (legacy.version !== 1 || legacy.sessionId !== id || !/^[a-f0-9]{32}$/.test(legacy.owner)))
@@ -403,10 +405,14 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
       (!row.localReplica && row.adapterId === 'account-sync') || row.cloud === true)
     return assertClassifiedOwner(app, id, captured, row, {}, local);
   const hub = new URL(captured.identity.hub).origin;
-  const provenance = row.creator || (row.cached && row.source?.account ? row.source : null);
+  // A previous capture during device-session renewal serialized { account: '' }.
+  // For the original native row, require independent owner and Hub evidence.
+  const emptyNativeCreator = row.localReplica === true && !row.cached && !row.source && isNativeOrigin(row) &&
+    row.creator?.account === '' && Object.keys(row.creator).length === 1;
+  const provenance = emptyNativeCreator ? null : row.creator || (row.cached && row.source?.account ? row.source : null);
   // Desktop sharing applies only to native rows. Transfers, imports and remote
   // locators keep their original account boundary even when stored locally.
-  const deviceChat = desktop && isDeviceChat(row, local);
+  const deviceChat = desktop && !emptyNativeCreator && isDeviceChat(row, local);
   const creatorOwner = provenance?.account && crypto.createHash('sha256').update('soduwork-account\0' + provenance.account).digest('hex').slice(0, 32);
   let proven = false;
   if (provenance) {
@@ -418,7 +424,8 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
   // create ownership; immutable capture/import provenance can own a read-only copy.
   const owners = [...nativeOwners(row)];
   if (row.workOwner) owners.push(row.workOwner);
-  for (const alias of deviceChat ? local.ids : new Set([id, ...(row.historyAliasIds || [])])) {
+  const hubAliases = new Set(deviceChat ? local.ids : [id, ...(row.historyAliasIds || [])]);
+  for (const alias of local.ids) {
     const indexed = captured.ownership?.(alias) || local.ownership(alias);
     const records = indexed ? indexed.records.slice() : ['session-memory-bindings', 'requirement-session-context', 'conversation-runtime-segments']
       .map(directory => saved(app, directory, alias)).filter(Boolean);
@@ -430,7 +437,7 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
       owners.push(record.owner);
       if (record.hub) {
         if (origin(record.hub) !== hub) throw Error('这条会话属于另一个账号或服务，请切回原账号');
-        proven = true;
+        if (hubAliases.has(alias)) proven = true;
       }
     }
   }
@@ -451,18 +458,8 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
     try { if (owners.includes(runtime.legacyScope(hub, candidate.clientId, captured.identity))) proven = true; }
     catch (_) { /* Expired tokens cannot establish new legacy provenance. */ }
   }
-  if (!proven && !row.cached && !row.source && row.adapterId !== 'account-sync' && isNativeOrigin(row) &&
-      (row.localReplica || row.nativeHistory || local.kind === 'ordinary' ||
-        typeof row.path === 'string' && path.isAbsolute(row.path))) {
-    // Old desktop builds bound the account in native memory but kept the Hub
-    // in the acknowledged outbound sync record. Combine both for this session.
-    const read = captured.readMetadata || metadataReader(app);
-    const binding = read('session-memory-bindings', id);
-    if (binding?.owner === captured.owner && !binding.hub && Array.isArray(binding.ids))
-      proven = require('./legacy-history-receipts.cjs').forApp(app)
-        .getHub(id, captured.owner, captured.identity, local.ids) === hub;
-  }
-  if (!proven) {
+  const receiptOwner = !proven && legacyReceiptOwner(app, id, captured, row, local, hub);
+  if (!proven && !receiptOwner) {
     if (owners.length) {
       const error = Error('这条旧会话缺少服务归属信息，原文件已保留，暂时无法读取');
       error.code = 'HISTORY_HUB_MISSING'; throw error;
@@ -471,7 +468,26 @@ function assertClassifiedReadable(app, id, captured, row, classified, desktop = 
     error.code = 'HISTORY_OWNER_MISSING'; throw error;
   }
   if (local.kind === 'protected' || row.cached)
-    assertClassifiedOwner(app, id, captured, row, { readOnly: true }, local);
+    assertClassifiedOwner(app, id, captured, row, { readOnly: true }, local, receiptOwner);
+}
+function legacyReceiptOwner(app, id, captured, row, local, hub) {
+  if (row.cached || row.source || row.adapterId === 'account-sync' || !isNativeOrigin(row) || local.parents.length > 1)
+    return '';
+  const read = captured.readMetadata || metadataReader(app);
+  // The retired sync writer acknowledged the logical conversation. Only a
+  // persisted switch manifest connects a segment to that original receipt.
+  const parent = local.parents[0], manifest = read('conversation-runtime-segments', parent || id);
+  if (manifest && manifest.owner !== captured.owner) return '';
+  if (parent && ![...(manifest?.segments || []), manifest?.active].some(part => part?.sessionId === id)) return '';
+  if (!manifest && !row.localReplica && !row.nativeHistory && local.kind !== 'ordinary' &&
+      !(typeof row.path === 'string' && path.isAbsolute(row.path))) return '';
+  for (const sourceId of parent ? [id, parent] : [id]) {
+    const binding = read('session-memory-bindings', sourceId);
+    if (binding?.owner !== captured.owner || binding.hub || !Array.isArray(binding.ids)) continue;
+    if (require('./legacy-history-receipts.cjs').forApp(app).getHub(sourceId, binding.owner, captured.identity, local.ids) === hub)
+      return binding.owner;
+  }
+  return '';
 }
 function origin(value) { try { return new URL(value).origin; } catch (_) { return ''; } }
 function readScope(identity, trustedOwner = '') {

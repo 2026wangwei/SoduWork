@@ -480,7 +480,12 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         .nativeAccessPolicy(app, row, actor, session, choice.adapterId, row.cwd).catch(() => null);
       if (policy) choice.accessMode = policy.mode;
     }
-    const view = await require('./local-history-view.cjs').create({ historyPreview, allowContinuation: canContinue, choice,
+    let packageDigest = content?.digest;
+    const packageKind = row.cwd && path.isAbsolute(row.cwd) && !shared && !row.cached && !row.source && !row.deviceTransferId && !content?.imported &&
+      (!content?.nativeReadError || content.nativeReadError.code === 'NATIVE_HISTORY_MISSING' && content.coverage?.complete) &&
+      content?.coverage?.sources?.some(source => source.id === row.id) &&
+      require('./history-package-picker.cjs').authoredKind(content.snapshot);
+    const view = await require('./local-history-view.cjs').create({ packageKind, historyPreview, allowContinuation: canContinue, choice,
       pendingUserTail: canContinue && !shared ? content?.pendingUserTail : null, retiredTools: Boolean(retired),
       unconfirmedUserTail: content?.unconfirmedUserTail === true,
       previewReason: busyReason || (['TRANSCRIPT_CHECKSUM_MISMATCH', 'NATIVE_SEGMENT_UNAVAILABLE', 'RUNNER_HISTORY_BUSY'].includes(content?.nativeReadError?.code)
@@ -493,15 +498,47 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       const original = view[name];
       view[name] = (...args) => { access.assertDeviceReadable(app, row.id, currentActor(captured), row); return original(...args); };
     }
+    let disposed = false;
+    const close = view.close;
+    view.close = async () => { disposed = true; return close(); };
+    const stillOpen = () => { if (disposed) throw Error('会话已关闭，请重新打开成果'); };
+    if (packageKind) {
+      view.chooseHistoryPackage = dialog => require('./history-package-picker.cjs').choose({
+        app, dialog, cwd: row.cwd, kind: packageKind,
+        preserve: !content.historyProtection && ordinaryDeviceChat(row) && content.coverage.complete ? async (manifest, files) => {
+          const guard = () => {
+            stillOpen();
+            access.assertReadable(app, row.id, currentActor(captured), row);
+            if (!ordinaryDeviceChat(row)) throw Error('会话归属已变化，请重新打开成果');
+          };
+          const migration = require('./history-package-migration.cjs'), previous = packageDigest;
+          packageDigest = await migration.preserve({ app, store, row, expectedDigest: previous, manifest, files, guard });
+          if (packageDigest !== previous && store.legacyUpgradeUpdatePackages) {
+            const saved = await store.deviceHistory(row.id);
+            if (saved?.digest === packageDigest) {
+              const status = await migration.inspect({ app, row, data: saved, assertCurrent: guard });
+              guard();
+              await store.legacyUpgradeUpdatePackages(row.id, packageDigest, status.needsSelection);
+            }
+          }
+        } : undefined,
+        authorize: async () => {
+          const latest = await resolve(row.id, captured);
+          if (!latest || latest.deleted || latest.cwd !== row.cwd || latest.cached || latest.deviceTransferId ||
+              await store.deviceHistoryVersion(row.id) !== packageDigest) throw Error('会话已变化，请重新打开成果');
+          const verify = evidence => {
+            access.assertReadable(app, row.id, currentActor(captured), mergeNativeEvidence(latest, evidence));
+            stillOpen();
+          };
+          verify();
+          await require('./device-history-native.cjs').probe({ app, session, row: latest, guard: verify });
+          verify();
+        } });
+    }
     if (historyPreview) {
-      let disposed = false;
-      const guards = artifactGuards(row, content, captured, () => {
-        if (disposed) throw Error('会话已关闭，请重新打开成果');
-      });
+      const guards = artifactGuards(row, content, captured, stillOpen);
       if (guards) {
         bindTurnArtifacts(view, () => row.id, captured, guards.guard);
-        const close = view.close;
-        view.close = async () => { disposed = true; return close(); };
         view.historyArtifacts = require('./device-history-artifacts.cjs').archivedView(
           app.getPath('userData'), row.id, row.cwd, content.localArtifactHistory, guards.guard, guards.authorize);
         view.historyArtifacts.deliveryLink = guards.deliveryLink;
@@ -577,7 +614,10 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
     // A cache has its own identity so deleting it cannot delete or hide the
     // account-authorized cloud original in the cloud directory.
     const remote = original.cloud || original.accountProjection;
-    const id = remote ? capturedCopyId(identity?.hub, accountId(identity), original.id) : original.id;
+    const account = accountId(identity);
+    const creator = account && identity?.hub ? { account, hub: identity.hub } : null;
+    if (remote && !creator) return;
+    const id = remote ? capturedCopyId(creator.hub, creator.account, original.id) : original.id;
     let displayed = remote ? { ...original } : require('./acceptance-session').projectHistory(app, original);
     if (!remote) {
       let retainedFailure = false;
@@ -614,7 +654,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       ...(protection ? { historyProtection: protection } : {}),
       ...(original.taskProjectionId && !original.taskId ? { taskId: original.taskProjectionId } : {}),
       remoteProjection: false, cached: !!remote, source: remote ? { hub: identity?.hub, id: original.id, account: accountId(identity) } : null,
-      creator: { account: accountId(identity), hub: identity?.hub }, historyAliasIds: remote ? [] : original.historyAliasIds || [] }]);
+      creator, historyAliasIds: remote ? [] : original.historyAliasIds || [] }]);
     onRegistered?.(row);
     if (row.deleted) return;
     if (!remote) {
@@ -779,6 +819,8 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       if (!observed.has(handle)) throw Error('本机会话尚未登记');
       return observed.get(handle).workspaceReady;
     },
+    stoppedRunnerRequirement: require('./stopped-runner-requirement.cjs').create({
+      app, session, store, actor: scoped.actor, currentActor, read }),
     bindContinuationArtifacts, prepareContinuation: deviceHistory.prepareContinuation, verifyRecoverySend: deviceHistory.verifyRecoverySend,
     verifyRetiredToolSend: deviceHistory.verifyRetiredToolSend, checkpointRetiringRunner: deviceHistory.checkpointRetiringRunner,
     backfill: deviceHistory.refresh,

@@ -15,12 +15,11 @@ function fixture() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../components/panels', name + '.js'), 'utf8'), sandbox);
   const links = sandbox.ChatOutputLinks;
   links.openTaskFile = async file => { calls.push(['task', file.name]); };
-  links.taskAttachment = async file => { calls.push(['pdf-window', file.name]); return { url: '/attachment' }; };
-  sandbox.soduWorkAPI.previewAttachment = async () => ({ ok: true });
   links.materialize = async (file, api, ref, options) => {
     calls.push(['materialize', file.name, options]);
     return { ...file, cloudPending: false, taskId: undefined, attachmentId: undefined, path: '/project/' + file.name };
   };
+  links.materializeTask = links.materialize;
   const wb = sandbox.ChatWorkbench;
   wb.bind(root, () => ({ ref: 'chat', cwd: '/project', intent: {} }));
   const render = files => wb.render(root, { status: 'idle', messages: [

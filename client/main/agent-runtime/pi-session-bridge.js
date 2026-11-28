@@ -1160,6 +1160,7 @@ function createPiSessionBridge(options) {
     deviceTransfer() { return deviceTransfer; },
     setDeviceTransfer(controller) { deviceTransfer = controller; },
     setReplicaHistory(source) { replicaHistory = source; },
+    refreshUpgradeInventory(app) { return refreshLocalHistory(app || opts.app); },
     indexedHistoryRow(id) { return replicaHistory?.indexedRow(id) || null; },
     setExternalHistory(source) { externalHistory = source; },
     async archivedConversation(app, id, options = {}) {
