@@ -127,8 +127,9 @@ async function snapshotAsync(session) {
 async function viewSnapshotAsync(session) {
   const current = await appendArchivedItems(session, await snapshotAsync(session));
   if (!turnArchives.has(archiveSource(session)) || !current) return current;
-  const archived = await turnArtifacts(session);
-  return { ...current, items: [...current.items, ...visibleVersions(archived)] };
+  const archived = visibleVersions(await turnArtifacts(session));
+  require('./legacy-website-reply.cjs').locate(session, current.items, archived);
+  return { ...current, items: [...current.items, ...archived] };
 }
 function visibleVersions(archived) {
   const provisional = file => /^(?:legacy|pi)-archive:/.test(file.turnId);
@@ -419,6 +420,7 @@ function publicArtifact(ref, item, link) {
     preview: Boolean(item && item.preview),
     primary: item ? item.primary !== false : true,
     ...(archiveReaders.has(item) ? { archivedReadOnly: true } : {}),
+    ...(archiveReaders.has(item) && Number.isSafeInteger(item.legacyReplyIndex) ? { legacyReplyIndex: item.legacyReplyIndex } : {}),
     ...(archiveReaders.has(item) && item.versionId && item.previewOf ? { previewOf: item.previewOf } : {}),
     ...(item?.versionId && item.turnId && archiveReaders.has(item) ?
       { versionId: item.versionId, turnId: item.turnId, userMessageIndex: item.userMessageIndex, originalArtifactId: item.originalArtifactId } : {}),

@@ -287,6 +287,13 @@
     const turns = deliveryTurns(snapshot, files);
     const prefix = snapshot.historyRecovery?.prefixMessageCount;
     const replies = [];
+    const originals = new Map();
+    for (const file of files) {
+      if (!file.versionId || !Number.isSafeInteger(file.legacyReplyIndex)) continue;
+      const ids = originals.get(file.legacyReplyIndex) || [];
+      ids.push(key(file));
+      originals.set(file.legacyReplyIndex, ids);
+    }
     for (const message of root.querySelectorAll('.nmsg.ai')) {
       const match = /^message:(\d+)$/.exec(message.dataset.chatNode || '');
       if (!match) continue;
@@ -297,6 +304,8 @@
       if (restored) message.dataset.deliveryRestored = 'true';
       else delete message.dataset.deliveryRestored;
       delete message.dataset.deliveryArchiveIds;
+      if (originals.has(absolute) && message.dataset.deliveryFinal !== 'false')
+        message.dataset.deliveryArchiveIds = originals.get(absolute).join(' ');
       if ((restored || snapshot.localReplica && prefix == null) && message.dataset.deliveryFinal !== 'false')
         replies.push(message);
     }

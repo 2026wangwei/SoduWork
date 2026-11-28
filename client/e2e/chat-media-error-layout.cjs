@@ -437,6 +437,28 @@ if (typeof electron === 'string') {
     assert.deepEqual(refreshed, [[at('message:1', '1')], [at('session', '1')], [at('session', '1')],
       [at('message:1', '2', '3'), at('message:3', '4')]]);
     report.cases.push({ archivedDeliveryRefresh: 'one immutable ID is mounted once after its inferred owner changes; distinct paths and rounds remain actionable' });
+    const actual = await require('./fixtures/legacy-website-versions.cjs')(fs.realpathSync.native(scratch));
+    const siteCards = await run(`(samples => Object.fromEntries(Object.entries(samples).map(([name, { files, snapshot }]) => {
+      list.replaceChildren();
+      const html = snapshot.messages.map((m, i) => m.role === 'user'
+        ? '<div class="nmsg user" data-chat-node="message:' + i + '"></div>'
+        : '<div class="nmsg ai" data-output-task="" data-delivery-final="true" data-chat-node="message:' + i +
+          '" data-delivery-current="' + (i === snapshot.messages.length - 1) + '"><div class="ntext">' + m.blocks[0].text + '</div></div>').join('');
+      ChatDomPatch.patchList(list, ChatOutputLinks.decorate(html, files, 'native-original', snapshot, list));
+      return [name, { cards: [...list.querySelectorAll('.ndelivery')].map(card => ({
+        id: card.querySelector('header [data-open-app]')?.dataset.openApp, owner: card.closest('.nmsg')?.dataset.chatNode || 'session',
+        actions: !!card.querySelector('[data-delivery-reveal]') && !!card.querySelector('[data-delivery-retry]'),
+      })), links: [...list.querySelectorAll('.ntext [data-open-app]')].map(link => link.dataset.openApp) }];
+    })))(${JSON.stringify(actual)})`);
+    const originalId = actual.original.files.find(f => f.versionId).artifactId;
+    assert.deepEqual(siteCards.original.cards, [{ id: originalId, owner: 'message:1', actions: true }]);
+    assert.deepEqual(siteCards.original.links, [originalId, originalId]);
+    const currentId = actual.copied.files.find(f => !f.versionId).artifactId;
+    assert.deepEqual(siteCards.copied.cards.map(card => card.id).sort(), [originalId, currentId].sort());
+    const newId = actual.second.files.find(f => f.turnId === 'second').artifactId;
+    assert.notEqual(newId, originalId);
+    assert.deepEqual(siteCards.second.cards.map(card => card.id).sort(), [originalId, newId].sort());
+    report.cases.push({ nativeWebsite: 'real scanner and archived bytes resolve both links and the card to the original; copies and later versions retain independent IDs' });
     report.ok = true;
   }).catch(error => { report.error = error.stack || String(error); }).finally(() => {
     fs.mkdirSync(output, { recursive: true });
