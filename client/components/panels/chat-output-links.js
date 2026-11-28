@@ -503,7 +503,7 @@
         decorateMemo.filesSig === filesSig && decorateMemo.stateSig === stateSig && decorateMemo.carrySig === carrySig)
       return decorateMemo.decorated;
     const historyMedia = snapshot.localReplica === true && (html.includes('<pre>') || html.includes('data-local-media-declaration'));
-    const historyPackage = snapshot.localReplica && snapshot.historicalPackageKind;
+    const historyPackage = snapshot.localReplica && snapshot.historyPackagePickerReady && snapshot.historicalPackageKind;
     if (!files.length && !historyMedia && !historyPackage && !snapshot?.artifactUrl && !snapshot?.cloudHandoff?.artifactUrl && !snapshot?.execution?.artifactUrl && !carrySig) return html;
     const root = document.createElement('div'); root.innerHTML = html;
     const hasVersions = files.some(file => file.versionId);
@@ -540,7 +540,7 @@
       file.pluginValidation?.state === 'ready' && file.historicalPackageKind === kind));
     if (missingKinds.length && ref) {
       const card = root.ownerDocument.createElement('div');
-      card.className = 'nplugin-draft'; card.dataset.chatNode = 'history-package-picker';
+      card.className = 'nplugin-draft nplugin-history-picker'; card.dataset.chatNode = 'history-package-picker';
       const copy = root.ownerDocument.createElement('div'); copy.className = 'nplugin-draft-copy';
       const title = root.ownerDocument.createElement('b');
       title.textContent = missingKinds.length > 1 ? '会话安装包' : missingKinds[0] === 'app' ? '即用安装包' : '插件安装包';

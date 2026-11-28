@@ -372,7 +372,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       access.assertDeviceReadable(app, row.id, currentActor(captured), row);
       if (!readable(row)) throw Error('会话归属已变化，请重新打开成果');
     };
-    const authorize = async () => {
+    async function verifyArchive() {
       const latest = await resolve(row.id, captured);
       if (!latest || latest.deleted || latest.cwd !== row.cwd || !readable(latest) ||
           await store.deviceHistoryVersion(row.id) !== digest)
@@ -384,6 +384,15 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         } });
       guard();
       if (!readable(latest)) throw Error('会话归属已变化，请重新打开成果');
+    }
+    // A gallery starts several reads together. Share only the in-flight
+    // verification and check each caller's live handle and principal again.
+    let checking;
+    const authorize = async () => {
+      guard();
+      checking ||= verifyArchive().finally(() => { checking = null; });
+      await checking;
+      guard();
     };
     return { guard, authorize, deliveryLink: require('./delivery-workspace.cjs').historyLinks(row, content.localArtifactHistory) };
   }
@@ -542,6 +551,10 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         view.historyArtifacts = require('./device-history-artifacts.cjs').archivedView(
           app.getPath('userData'), row.id, row.cwd, content.localArtifactHistory, guards.guard, guards.authorize);
         view.historyArtifacts.deliveryLink = guards.deliveryLink;
+        const history = content.localArtifactHistory;
+        const scope = JSON.stringify([captured.readScope, captured.historyEpoch, row.id, content.digest]);
+        view.initialHistoryMedia = () => require('./history-gallery.cjs').initial({
+          profile: app.getPath('userData'), row, history, view, guards, scope });
       }
     }
     const load = view.loadHistory;
